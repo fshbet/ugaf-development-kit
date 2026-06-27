@@ -1,0 +1,31 @@
+Metadata-Version: 2.4
+Name: ugaf
+Version: 1.0.0a1
+Summary: Universal Game Automation Framework
+Project-URL: Homepage, https://github.com/your-org/ugaf
+Project-URL: Repository, https://github.com/your-org/ugaf
+Project-URL: Documentation, https://ugaf.readthedocs.io/
+Project-URL: Changelog, https://github.com/your-org/ugaf/blob/main/CHANGELOG.md
+Keywords: gaming,automation,framework,game-bot,uaf
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Games/Entertainment
+Classifier: Topic :: Software Development :: Libraries :: Application Frameworks
+Requires-Python: >=3.13
+Description-Content-Type: text/markdown
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: structlog>=25.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24; extra == "dev"
+Requires-Dist: pytest-cov>=5.0; extra == "dev"
+Requires-Dist: ruff>=0.5.0; extra == "dev"
+Requires-Dist: black>=24.0; extra == "dev"
+Requires-Dist: mypy>=1.10; extra == "dev"
+
+# Universal Game Automation Framework (UGAF)
+
+This development kit is the foundation for building a production-ready, plugin-based game automation framework. Read all documents before generating code.
