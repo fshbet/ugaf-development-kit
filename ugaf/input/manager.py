@@ -14,7 +14,8 @@ from ugaf.input.exceptions import (
     ProviderNotAvailableError,
 )
 from ugaf.input.provider import InputProvider
-from ugaf.input.registry import InputProviderRegistry, registry as _default_registry
+from ugaf.input.registry import InputProviderRegistry
+from ugaf.input.registry import registry as _default_registry
 from ugaf.input.types import Button, Key
 
 __all__ = [
@@ -123,9 +124,7 @@ class InputManager:
         try:
             self._provider = self._registry.create(provider_name, provider_config)
         except KeyError as exc:
-            raise ProviderNotAvailableError(
-                f"Unknown input provider: {provider_name!r}"
-            ) from exc
+            raise ProviderNotAvailableError(f"Unknown input provider: {provider_name!r}") from exc
 
         last_exc: Exception | None = None
         for attempt in range(1, self._retry_count + 1):

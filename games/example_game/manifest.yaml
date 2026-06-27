@@ -1,0 +1,12 @@
+name: Example Game
+id: example_game
+author: UGAF Team
+version: 1.0.0
+description: A reference game plugin that verifies the Game SDK works correctly
+supported_platforms:
+  - windows
+  - linux
+minimum_framework_version: 1.0.0
+capabilities:
+  - input
+priority: 100

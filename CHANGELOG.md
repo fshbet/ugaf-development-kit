@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.0a4 (2026-06-27)
+
+### Added
+
+- **Game SDK**: `ugaf.sdk` package with `Capability` enum (7 members),
+  `GameState` enum (8 states + transition map), `PluginMetadata` (frozen
+  dataclass), `GameContext` (dataclass with core services + extra dict),
+  `GamePlugin` (abstract base class with 8 async lifecycle methods), and
+  7 framework event topic constants.
+- **Plugin framework**: `ugaf.plugins` package with `PluginRegistry`
+  (thread-safe, duplicate-ID/name detection, capability-based lookup,
+  priority-sorted listing), `PluginValidator` (required fields, semver,
+  framework version compatibility, capability parsing), `PluginLifecycle`
+  (state machine with event publishing, error handling, health checks),
+  `PluginLoader` (filesystem discovery — 6 scenarios handled), and
+  `PluginManager` (orchestrator for discover/load/initialize/start/stop/
+  pause/shutdown operations on individual or all plugins).
+- **Reference game**: `games/example_game/` with manifest, plugin class,
+  and configuration for SDK verification.
+- **Test coverage**: 43 tests across lifecycle (state transitions, event
+  publishing, error handling, health), loader (6 discovery scenarios),
+  and manager (orchestration, batch operations, error paths).
+
+### Fixed
+
+- **`_transition()`**: was validating state transitions but never assigning
+  `self._state` — now correctly sets `self._state = target`.
+- **`initialize_all()`**: was iterating over `PluginMetadata` objects as
+  plugin IDs instead of `meta.id` strings.
+
 ## 1.0.0a3 (2026-06-27)
 
 ### Added

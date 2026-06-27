@@ -33,9 +33,20 @@ def _make_provider_cls(**overrides: object) -> type[InputProvider]:
     defaults = {
         name: lambda s, *a, **kw: None
         for name in (
-            "connect", "disconnect", "click", "double_click", "right_click",
-            "move_mouse", "drag", "scroll", "key_down", "key_up",
-            "press_key", "type_text", "hotkey", "wait",
+            "connect",
+            "disconnect",
+            "click",
+            "double_click",
+            "right_click",
+            "move_mouse",
+            "drag",
+            "scroll",
+            "key_down",
+            "key_up",
+            "press_key",
+            "type_text",
+            "hotkey",
+            "wait",
         )
     }
     defaults["is_connected"] = lambda s: True

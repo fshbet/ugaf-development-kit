@@ -39,9 +39,7 @@ class InputProviderRegistry:
 
         """
         if not (isinstance(provider_cls, type) and issubclass(provider_cls, InputProvider)):
-            raise TypeError(
-                f"{provider_cls!r} is not an InputProvider subclass"
-            )
+            raise TypeError(f"{provider_cls!r} is not an InputProvider subclass")
         with self._lock:
             if name in self._providers:
                 raise ValueError(f"Provider {name!r} is already registered")

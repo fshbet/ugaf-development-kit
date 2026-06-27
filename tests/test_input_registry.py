@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import threading
-from unittest.mock import MagicMock
 
 import pytest
 
-from ugaf.input.exceptions import InputError
 from ugaf.input.provider import InputProvider
 from ugaf.input.registry import InputProviderRegistry
 from ugaf.input.types import Button, Key
@@ -140,9 +138,11 @@ class TestCreate:
             def disconnect(self) -> None: ...
             def is_connected(self) -> bool:
                 return False
+
             @property
             def screen_size(self) -> tuple[int, int]:
                 return (0, 0)
+
             def click(self, x, y, button="left"): ...
             def double_click(self, x, y): ...
             def right_click(self, x, y): ...
