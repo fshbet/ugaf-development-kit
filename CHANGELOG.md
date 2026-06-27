@@ -1,5 +1,62 @@
 # Changelog
 
+## 1.0.0a3 (2026-06-27)
+
+### Added
+
+- **Input engine**: `ugaf.input` package with abstract `InputProvider`,
+  `WindowsInputProvider`, `AdbInputProvider`, and `InputManager`.
+- **Windows provider**: desktop automation via `pyautogui`, `keyboard`, and
+  `mouse` — mouse movement, clicks, drags, scrolling, keyboard input,
+  hotkeys, and screenshots.
+- **ADB provider**: Android automation via ADB shell commands — tap, swipe,
+  long press, text input, key events, screen-size detection, device
+  discovery, and screenshot capture.
+- **Input manager**: provider selection (YAML-driven), lifecycle management,
+  coordinate validation, automatic retries with configurable count/delay,
+  dry-run mode, verbose logging, and context-manager support.
+- **Input exceptions**: `InputError`, `DeviceNotFound`, `ProviderNotAvailable`,
+  `ConnectionFailed`, `CoordinateOutOfBounds`.
+- **Type definitions**: `Point` (frozen dataclass), `Button` and `Key` type
+  aliases.
+- **Input configuration**: `config/default.yaml` with `input.*` settings
+  (provider, delays, retry, ADB path, dry-run, verbose).
+- **Optional input dependencies**: `[input]` extras group in `pyproject.toml`
+  (`pyautogui`, `keyboard`, `mouse`).
+- **Test coverage**: 80+ tests for exceptions, types, Windows provider
+  (mocked), ADB provider (mocked), manager (mocked), coordinate validation,
+  retry logic, dry-run mode, and context-manager protocol.
+
+### Changed
+
+- **`config/default.yaml`**: now includes default `input` section.
+
+## 1.0.0a2 (2026-06-27)
+
+### Added
+
+- **Sprint 02 framework**: DI container (`DependencyContainer`), plugin
+  lifecycle (`PluginInstance`), health checks (`HealthRegistry`), platform
+  detection (`detect_platform`), application context (`AppContext`), and
+  CLI framework (`build_parser`, `run_cli`).
+- **Exception types**: `DependencyInjectionError`, `CircularDependencyError`,
+  `PluginLifecycleError`, `HealthCheckError`, `PlatformError`, `CliError`.
+- **Health check framework**: `HealthStatus`, `HealthResult`, `HealthRegistry`
+  with concurrent check execution and exception isolation.
+- **Plugin lifecycle**: `PluginState` enum with valid state transitions
+  (CREATED → INITIALIZED → STARTED → PAUSED → STOPPED → SHUTDOWN).
+- **Platform detection**: `PlatformInfo` frozen dataclass with WSL detection.
+- **Dependency injection**: thread-safe container with singleton/transient
+  lifetimes, constructor injection, and circular dependency detection.
+- **Application context**: `AppContext` dataclass wiring all core services.
+- **Default configuration**: `config/default.yaml` with logging defaults.
+
+### Changed
+
+- **Bootstrap**: `Application` gains `app.run_forever()`, `app.health()`,
+  `app.context` property; fully backward-compatible.
+- **`__init__.py`**: exports all new Sprint 02 types.
+
 ## 1.0.0a1 (2026-06-27)
 
 ### Added

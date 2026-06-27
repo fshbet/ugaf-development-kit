@@ -32,6 +32,11 @@ dev = [
     "black>=24.0",
     "mypy>=1.10",
 ]
+input = [
+    "pyautogui>=0.9",
+    "keyboard>=0.13",
+    "mouse>=0.7",
+]
 
 [project.urls]
 Homepage = "https://github.com/your-org/ugaf"

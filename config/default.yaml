@@ -1,0 +1,18 @@
+logging:
+  level: INFO
+  json_format: false
+
+input:
+  provider: windows
+  dry_run: false
+  verbose: false
+  delays:
+    mouse: 0.01
+    keyboard: 0.005
+  retry:
+    count: 3
+    delay: 0.5
+  timeout: 5.0
+  adb:
+    executable: adb
+    default_device: null
