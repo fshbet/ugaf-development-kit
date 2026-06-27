@@ -31,3 +31,27 @@ class ApplicationError(UGAFError, RuntimeError):
     existing callers catching ``RuntimeError`` still work.
 
     """
+
+
+class DependencyInjectionError(UGAFError):
+    """Raised when dependency resolution fails."""
+
+
+class CircularDependencyError(DependencyInjectionError):
+    """Raised when a circular dependency is detected."""
+
+
+class PluginLifecycleError(UGAFError):
+    """Raised when a plugin lifecycle operation fails."""
+
+
+class HealthCheckError(UGAFError):
+    """Raised when a health check operation fails."""
+
+
+class PlatformError(UGAFError):
+    """Raised when platform detection fails."""
+
+
+class CliError(UGAFError):
+    """Raised when a CLI operation fails."""

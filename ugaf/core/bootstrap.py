@@ -8,9 +8,13 @@ from pathlib import Path
 from types import FrameType
 
 from ugaf.core.config import Config
+from ugaf.core.context import AppContext
+from ugaf.core.di import DependencyContainer
 from ugaf.core.event_bus import Event, EventBus
 from ugaf.core.exceptions import ApplicationError
+from ugaf.core.health import HealthRegistry, HealthResult, HealthStatus
 from ugaf.core.logger import Logger, configure_logger, get_logger
+from ugaf.core.platform import detect_platform
 from ugaf.core.plugin_loader import PluginLoader
 
 __all__ = [
@@ -57,6 +61,8 @@ class Application:
         self.logger: Logger | None = None
         self.event_bus: EventBus | None = None
         self.plugin_loader: PluginLoader | None = None
+        self._container = DependencyContainer()
+        self._health_registry: HealthRegistry | None = None
         self._running = False
 
     # ------------------------------------------------------------------
@@ -84,6 +90,10 @@ class Application:
             games_dir=self._games_dir,
             logger=logger,
         )
+
+        self._health_registry = HealthRegistry()
+        self._health_registry.register("config", self._check_config_health)
+        self._health_registry.register("event_bus", self._check_event_bus_health)
 
         logger.info("app.initialized", config_path=str(self._config_path))
 
@@ -184,7 +194,81 @@ class Application:
     # Properties
     # ------------------------------------------------------------------
 
+    async def health(self) -> list[HealthResult]:
+        """Run all registered health checks.
+
+        Returns:
+            List of ``HealthResult`` for every registered check.
+
+        Raises:
+            ApplicationError: If not initialized.
+
+        """
+        if self._health_registry is None:
+            raise ApplicationError("Application is not initialized")
+        return await self._health_registry.run_all()
+
+    @property
+    def context(self) -> AppContext:
+        """Return the application context (available after initialisation).
+
+        Raises:
+            ApplicationError: If accessed before ``initialize()``.
+
+        """
+        if self.config is None:
+            raise ApplicationError("Application is not initialized")
+        logger = self.logger
+        event_bus = self.event_bus
+        plugin_loader = self.plugin_loader
+        health_registry = self._health_registry
+        assert logger is not None
+        assert event_bus is not None
+        assert plugin_loader is not None
+        assert health_registry is not None
+        return AppContext(
+            config=self.config,
+            logger=logger,
+            event_bus=event_bus,
+            container=self._container,
+            plugin_loader=plugin_loader,
+            health_registry=health_registry,
+            platform=detect_platform(),
+        )
+
     @property
     def is_running(self) -> bool:
         """Return whether the application is running."""
         return self._running
+
+    # ------------------------------------------------------------------
+    # Internal health checks
+    # ------------------------------------------------------------------
+
+    async def _check_config_health(self) -> HealthResult:
+        """Verify that the configuration is loaded."""
+        if self.config is None:
+            return HealthResult(
+                status=HealthStatus.ERROR,
+                component="config",
+                message="Config not loaded",
+            )
+        return HealthResult(
+            status=HealthStatus.HEALTHY,
+            component="config",
+            message="Config loaded",
+        )
+
+    async def _check_event_bus_health(self) -> HealthResult:
+        """Verify that the event bus is available."""
+        if self.event_bus is None:
+            return HealthResult(
+                status=HealthStatus.ERROR,
+                component="event_bus",
+                message="Event bus not available",
+            )
+        return HealthResult(
+            status=HealthStatus.HEALTHY,
+            component="event_bus",
+            message="Event bus operational",
+        )
