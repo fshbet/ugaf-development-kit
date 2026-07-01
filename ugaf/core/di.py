@@ -324,7 +324,7 @@ class DependencyContainer:
         if descriptor is not None:
             return self._resolve_descriptor(descriptor, visiting)
         raise DependencyInjectionError(
-            f"Unregistered dependency {dep_type.__name__} " f"required by constructor"
+            f"Unregistered dependency {dep_type.__name__} required by constructor"
         )
 
     def _get_type_hints(self, cls: type) -> dict[str, type]:

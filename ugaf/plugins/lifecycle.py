@@ -24,7 +24,7 @@ from ugaf.sdk.events import (
 from ugaf.sdk.exceptions import PluginStateError
 from ugaf.sdk.game import GamePlugin
 from ugaf.sdk.metadata import PluginMetadata
-from ugaf.sdk.state import GameState, validate_transition
+from ugaf.sdk.state import GameState
 
 __all__ = [
     "PluginLifecycle",
@@ -229,7 +229,7 @@ class PluginLifecycle:
 
     def _transition(self, target: GameState) -> None:
         """Validate and apply a state transition."""
-        validate_transition(self._state, target)
+        self._state.validate_transition(target)
         self._state = target
 
     async def _publish_state_event(self) -> None:

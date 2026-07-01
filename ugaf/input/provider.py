@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from ugaf.input.types import Button, Key
 
@@ -17,6 +18,15 @@ class InputProvider(ABC):
     Each subclass implements the full input automation interface for a
     specific platform (Windows, Android, etc.).
     """
+
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
+        """Initialise the provider.
+
+        Args:
+            config: Optional configuration dict.
+
+        """
+        self._config = config or {}
 
     # ------------------------------------------------------------------
     # Lifecycle

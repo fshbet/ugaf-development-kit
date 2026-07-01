@@ -81,7 +81,7 @@ def event_bus() -> EventBus:
 
 @pytest.fixture
 def context() -> GameContext:
-    return GameContext(config={}, logger=None, event_bus=EventBus())  # type: ignore[arg-type]
+    return GameContext(config={}, logger=None, event_bus=EventBus())
 
 
 class TestPluginLifecycle:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from ugaf.sdk.context import GameContext
 from ugaf.sdk.game import GamePlugin
 from ugaf.sdk.metadata import PluginMetadata
@@ -30,7 +32,7 @@ class TestGamePlugin:
 
     async def test_lifecycle_methods(self) -> None:
         plugin = _ConcretePlugin()
-        ctx = GameContext(config={}, logger=None, event_bus=None)  # type: ignore[arg-type]
+        ctx = GameContext(config={}, logger=None, event_bus=None)
 
         await plugin.initialize(ctx)
         assert plugin._initialized is True
@@ -95,6 +97,3 @@ class _ConcretePlugin(GamePlugin):
 
     async def health(self) -> dict[str, Any]:
         return {"status": "healthy"}
-
-
-import pytest

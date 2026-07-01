@@ -141,6 +141,18 @@ class TestPluginValidator:
         meta = PluginValidator.validate_manifest(data)
         assert meta.priority == 100
 
+    def test_priority_negative_raises(self) -> None:
+        data = dict(_VALID_MANIFEST)
+        data["priority"] = -1
+        with pytest.raises(PluginValidationError, match="priority must be between"):
+            PluginValidator.validate_manifest(data)
+
+    def test_priority_too_high_raises(self) -> None:
+        data = dict(_VALID_MANIFEST)
+        data["priority"] = 1001
+        with pytest.raises(PluginValidationError, match="priority must be between"):
+            PluginValidator.validate_manifest(data)
+
     # ------------------------------------------------------------------
     # Supported platforms
     # ------------------------------------------------------------------

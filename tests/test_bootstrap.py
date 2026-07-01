@@ -31,7 +31,7 @@ async def test_initialize_creates_services(tmp_path: Path) -> None:
     assert app.config is not None
     assert app.logger is not None
     assert app.event_bus is not None
-    assert app.plugin_loader is not None
+    assert app.plugin_manager is not None
     assert app.config.get("logging.level") == "DEBUG"
 
 

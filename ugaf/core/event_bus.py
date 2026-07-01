@@ -141,7 +141,7 @@ class EventBus:
                     error=str(exc),
                 )
                 raise EventBusError(
-                    f"Handler {handler.__name__!r} failed for topic " f"{event.topic!r}: {exc}"
+                    f"Handler {handler.__name__!r} failed for topic {event.topic!r}: {exc}"
                 ) from exc
 
     def _match_subscribers(self, topic: str) -> list[EventHandler]:

@@ -154,7 +154,7 @@ class AdbInputProvider(InputProvider):
         )
         if result.returncode != 0:
             raise ConnectionFailedError(
-                f"ADB not available (exit code {result.returncode}): " f"{result.stderr.strip()}"
+                f"ADB not available (exit code {result.returncode}): {result.stderr.strip()}"
             )
 
         devices = self._parse_devices(result.stdout)
@@ -164,7 +164,7 @@ class AdbInputProvider(InputProvider):
         if self._device_id is not None:
             if self._device_id not in devices:
                 raise DeviceNotFoundError(
-                    f"Device {self._device_id!r} not found. " f"Available: {devices}"
+                    f"Device {self._device_id!r} not found. Available: {devices}"
                 )
         else:
             self._device_id = devices[0]

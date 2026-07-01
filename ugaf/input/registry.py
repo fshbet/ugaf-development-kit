@@ -22,6 +22,7 @@ class InputProviderRegistry:
     """
 
     def __init__(self) -> None:
+        """Initialise an empty registry."""
         self._providers: dict[str, type[InputProvider]] = {}
         self._lock = threading.Lock()
 

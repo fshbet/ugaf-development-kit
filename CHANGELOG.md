@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.0.0a5 (2026-07-01)
+
+### Removed (breaking)
+
+- **Legacy plugin loader**: `ugaf/core/plugin_loader.py` (`PluginLoader`, `PluginInfo`,
+  `PluginManifest`) and `ugaf/core/plugin.py` (`PluginInstance`, `PluginState`) have been deleted.
+  This loader discovered `manifest.yaml`/`bot.py`/`vision.py`/`strategy.py` but never actually
+  invoked any plugin code — `ugaf.plugins.manager.PluginManager` (the SDK-based system) is now the
+  framework's only plugin system. See `ARCHITECTURE_DECISIONS.md` ADR-007.
+- **`PluginLoaderError`, `PluginLifecycleError`**: removed from `ugaf.core.exceptions` (unused
+  after the above removal — the SDK system uses `ugaf.sdk.exceptions.PluginValidationError` /
+  `PluginStateError`).
+- **`templates/bot.py`, `templates/strategy.py`, `templates/vision.py`**: removed. Replaced by a
+  single `templates/plugin.py` implementing `GamePlugin`.
+
+### Changed (breaking)
+
+- **`Application.plugin_loader`** → **`Application.plugin_manager`** (`PluginManager` instead of
+  `PluginLoader`). `Application.start()` now calls `discover()` → `initialize_all()` →
+  `start_all()`; `Application.stop()` calls `stop_all()` → `shutdown_all()` — plugin lifecycle
+  methods are now actually invoked (previously they were not).
+- **`AppContext.plugin_loader`** → **`AppContext.plugin_manager`**.
+- **`ugaf core.__init__.py`**: no longer re-exports `PluginInfo`/`PluginLoader`/
+  `PluginLoaderError`/`PluginManifest` (plugin concerns now live entirely in `ugaf.plugins`/
+  `ugaf.sdk`, not `ugaf.core`).
+- **`ugaf plugins` CLI command**: now lists `PluginMetadata` (name, id, author, capabilities,
+  priority) from the SDK registry instead of legacy bot/vision/strategy module flags.
+- **`templates/manifest.yaml`**: rewritten to the SDK schema (`id`, `author`, `capabilities`,
+  `priority`, `minimum_framework_version`) instead of the legacy flat `name`/`version` schema.
+- **`games/example_game/manifest.yaml`**: fixed a `capabilities` mismatch against `plugin.py`
+  (manifest said `[input]`, code said `[]`) found during the architecture audit — now both say
+  `[]`, matching the plugin's actual (no-op) behavior.
+
+### Added
+
+- **`tests/test_cli.py`**: 8 new tests covering `build_parser`, and the `version`/`stop`/`health`/
+  `plugins` CLI commands — `ugaf/core/cli.py` previously had 0% test coverage.
+- **`plugin_manager` health check**: `Application` now reports the number of registered plugins
+  via `ugaf health`.
+- **`PROJECT_STATUS.md`, `BUILD_STATUS.md`**: source-verified repository audit reports (see
+  Milestone 1 of the architecture hardening directive).
+
 ## 1.0.0a4 (2026-06-27)
 
 ### Added

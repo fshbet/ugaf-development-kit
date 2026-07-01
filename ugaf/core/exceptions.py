@@ -20,10 +20,6 @@ class EventBusError(UGAFError):
     """Raised when an event bus operation fails."""
 
 
-class PluginLoaderError(UGAFError):
-    """Raised when plugin discovery or loading fails."""
-
-
 class ApplicationError(UGAFError, RuntimeError):
     """Raised when the application lifecycle is used incorrectly.
 
@@ -39,10 +35,6 @@ class DependencyInjectionError(UGAFError):
 
 class CircularDependencyError(DependencyInjectionError):
     """Raised when a circular dependency is detected."""
-
-
-class PluginLifecycleError(UGAFError):
-    """Raised when a plugin lifecycle operation fails."""
 
 
 class HealthCheckError(UGAFError):

@@ -31,8 +31,8 @@ class GameContext:
 
     """
 
-    config: Config
-    logger: Logger
-    event_bus: EventBus
+    config: Config | dict[str, Any]
+    logger: Logger | None = None
+    event_bus: EventBus | None = None
     service_container: DependencyContainer | None = None
     extra: dict[str, Any] = field(default_factory=dict)

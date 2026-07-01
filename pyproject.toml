@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ugaf"
-version = "1.0.0a1"
+version = "1.0.0a5"
 description = "Universal Game Automation Framework"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -36,6 +36,13 @@ input = [
     "pyautogui>=0.9",
     "keyboard>=0.13",
     "mouse>=0.7",
+]
+imaging = [
+    "opencv-python>=4.9.0",
+    "numpy>=1.26",
+]
+vision = [
+    "ugaf[imaging]",
 ]
 
 [project.urls]

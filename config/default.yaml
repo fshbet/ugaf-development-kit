@@ -16,3 +16,13 @@ input:
   adb:
     executable: adb
     default_device: null
+
+imaging:
+  backend: opencv
+  default_format: png
+
+vision:
+  screenshot_provider: null
+  template_match_method: ccorr_normed
+  template_confidence: 0.9
+  pixel_threshold: 30.0

@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from enum import Enum
 
+from ugaf.sdk.exceptions import PluginStateError
+
 __all__ = [
     "GameState",
 ]
-
-# Valid state transitions for GameState.
-_TRANSITIONS: dict[GameState, set[GameState]] = {}
 
 
 class GameState(Enum):
@@ -34,43 +33,39 @@ class GameState(Enum):
     ERROR = "error"
     SHUTDOWN = "shutdown"
 
+    def can_transition_to(self, target: GameState) -> bool:
+        """Check whether moving from *self* to *target* is allowed.
 
-_TRANSITIONS[GameState.CREATED] = {GameState.INITIALIZED, GameState.SHUTDOWN}
-_TRANSITIONS[GameState.INITIALIZED] = {GameState.RUNNING, GameState.SHUTDOWN}
-_TRANSITIONS[GameState.RUNNING] = {GameState.PAUSED, GameState.STOPPED}
-_TRANSITIONS[GameState.PAUSED] = {GameState.RUNNING, GameState.STOPPED}
-_TRANSITIONS[GameState.STOPPED] = {GameState.RUNNING, GameState.SHUTDOWN}
-_TRANSITIONS[GameState.ERROR] = {GameState.CREATED, GameState.SHUTDOWN}
-_TRANSITIONS[GameState.SHUTDOWN] = set()
+        Args:
+            target: The desired target state.
+
+        Returns:
+            ``True`` if the transition is valid.
+
+        """
+        allowed = _TRANSITIONS.get(self, set())
+        return target in allowed
+
+    def validate_transition(self, target: GameState) -> None:
+        """Raise :class:`PluginStateError` if the transition is invalid.
+
+        Args:
+            target: The desired target state.
+
+        Raises:
+            PluginStateError: If the transition is not allowed.
+
+        """
+        if not self.can_transition_to(target):
+            raise PluginStateError(f"Cannot transition from {self.value!r} to {target.value!r}")
 
 
-def is_valid_transition(current: GameState, target: GameState) -> bool:
-    """Check whether moving from *current* to *target* is allowed.
-
-    Args:
-        current: The current state.
-        target: The desired target state.
-
-    Returns:
-        ``True`` if the transition is valid.
-
-    """
-    allowed = _TRANSITIONS.get(current, set())
-    return target in allowed
-
-
-def validate_transition(current: GameState, target: GameState) -> None:
-    """Raise :class:`PluginStateError` if the transition is invalid.
-
-    Args:
-        current: The current state.
-        target: The desired target state.
-
-    Raises:
-        PluginStateError: If the transition is not allowed.
-
-    """
-    if not is_valid_transition(current, target):
-        from ugaf.sdk.exceptions import PluginStateError
-
-        raise PluginStateError(f"Cannot transition from {current.value!r} to {target.value!r}")
+_TRANSITIONS: dict[GameState, set[GameState]] = {
+    GameState.CREATED: {GameState.INITIALIZED, GameState.SHUTDOWN},
+    GameState.INITIALIZED: {GameState.RUNNING, GameState.SHUTDOWN},
+    GameState.RUNNING: {GameState.PAUSED, GameState.STOPPED},
+    GameState.PAUSED: {GameState.RUNNING, GameState.STOPPED},
+    GameState.STOPPED: {GameState.RUNNING, GameState.SHUTDOWN},
+    GameState.ERROR: {GameState.CREATED, GameState.SHUTDOWN},
+    GameState.SHUTDOWN: set(),
+}

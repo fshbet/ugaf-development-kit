@@ -16,22 +16,28 @@
 
 ## Plugin System
 
+As of Milestone 1 of the architecture hardening pass, `ugaf.plugins`/`ugaf.sdk` (the Game SDK) is
+the framework's only plugin system — the previously-coexisting legacy loader
+(`ugaf/core/plugin_loader.py`, `ugaf/core/plugin.py`) has been removed. See
+`PLUGIN_ARCHITECTURE.md` for the current design.
+
 - **No hot-reload**. Plugins must be discovered at startup; adding,
   removing, or modifying plugin directories at runtime is not detected.
-- **No dependency ordering**. If plugin A depends on plugin B, there is no
-  mechanism to guarantee start/stop ordering.
-- **No isolation**. Plugins share the same Python process and global
-  interpreter state. A crashing plugin can bring down the entire
-  application.
-- **No plugin lifecycle hooks beyond start/stop**. There is no
-  `before_start`, `after_stop`, or `on_error` callback.
-- **Plugin config parsing failures are silently swallowed**. When a
-  plugin's `config.yaml` is invalid YAML, `_load_config` logs a warning
-  and returns an empty dict. The error is not propagated.
-- **Module import errors are silently swallowed**. When a plugin's
-  `bot.py` (or similar) fails to import, `_import_module` logs an error
-  and returns `None` without raising. The plugin is still "loaded" with
-  missing modules.
+- **No dependency ordering between plugins**. `priority` controls start/stop order but there is no
+  mechanism to declare "plugin A requires plugin B".
+- **No process isolation**. Plugins share the same Python process and global
+  interpreter state. A crashing plugin task running outside its lifecycle methods
+  (e.g. a background `asyncio.Task` it spawns itself) can affect the whole
+  application; lifecycle-method exceptions are caught and converted to `plugin.failed`
+  events, but that only covers `initialize`/`start`/`pause`/`resume`/`stop`.
+- **Manifest and in-code metadata are not kept in sync automatically**. `manifest.yaml` and the
+  `metadata` object inside `plugin.py` are independent — nothing currently detects if they drift
+  apart (this project's own `games/example_game/` shipped with a `capabilities` mismatch between
+  the two before it was caught and fixed manually during Milestone 1).
+- **Plugin discovery failures (bad manifest, missing `GamePlugin` subclass, import error) are
+  logged and the plugin is skipped** rather than raising — this means a broken plugin does not
+  prevent other plugins from loading, but also means a typo in a manifest can silently produce
+  "0 plugins discovered" with no obvious error unless log output is inspected.
 
 ## Event Bus
 

@@ -11,6 +11,7 @@ import yaml
 
 from ugaf.core.logger import Logger, get_logger
 from ugaf.plugins.validator import PluginValidator
+from ugaf.sdk.exceptions import PluginValidationError
 from ugaf.sdk.game import GamePlugin
 from ugaf.sdk.metadata import PluginMetadata
 
@@ -128,8 +129,6 @@ class PluginLoader:
         with manifest_path.open("r", encoding="utf-8") as fh:
             raw: dict[str, Any] | None = yaml.safe_load(fh)
         if not isinstance(raw, dict):
-            from ugaf.sdk.exceptions import PluginValidationError
-
             raise PluginValidationError(f"Invalid manifest in {manifest_path}: expected a mapping")
 
         metadata = PluginValidator.validate_manifest(raw)
@@ -159,8 +158,6 @@ class PluginLoader:
         module_name = f"ugaf_game_{metadata.id}"
         spec = importlib.util.spec_from_file_location(module_name, plugin_path)
         if spec is None or spec.loader is None:
-            from ugaf.sdk.exceptions import PluginValidationError
-
             raise PluginValidationError(f"Failed to create module spec for {plugin_path}")
 
         module = importlib.util.module_from_spec(spec)
@@ -169,8 +166,6 @@ class PluginLoader:
 
         plugin_cls = self._find_game_plugin_class(module)
         if plugin_cls is None:
-            from ugaf.sdk.exceptions import PluginValidationError
-
             raise PluginValidationError(f"No GamePlugin subclass found in {plugin_path}")
 
         return plugin_cls

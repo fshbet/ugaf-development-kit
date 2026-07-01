@@ -8,7 +8,7 @@ from ugaf.sdk.capabilities import Capability
 from ugaf.sdk.context import GameContext
 from ugaf.sdk.exceptions import PluginStateError
 from ugaf.sdk.metadata import PluginMetadata
-from ugaf.sdk.state import GameState, is_valid_transition, validate_transition
+from ugaf.sdk.state import GameState
 
 
 class TestCapability:
@@ -45,53 +45,53 @@ class TestGameState:
 
 class TestTransitions:
     def test_created_to_initialized(self) -> None:
-        assert is_valid_transition(GameState.CREATED, GameState.INITIALIZED)
+        assert GameState.CREATED.can_transition_to(GameState.INITIALIZED)
 
     def test_created_to_shutdown(self) -> None:
-        assert is_valid_transition(GameState.CREATED, GameState.SHUTDOWN)
+        assert GameState.CREATED.can_transition_to(GameState.SHUTDOWN)
 
     def test_initialized_to_running(self) -> None:
-        assert is_valid_transition(GameState.INITIALIZED, GameState.RUNNING)
+        assert GameState.INITIALIZED.can_transition_to(GameState.RUNNING)
 
     def test_running_to_paused(self) -> None:
-        assert is_valid_transition(GameState.RUNNING, GameState.PAUSED)
+        assert GameState.RUNNING.can_transition_to(GameState.PAUSED)
 
     def test_running_to_stopped(self) -> None:
-        assert is_valid_transition(GameState.RUNNING, GameState.STOPPED)
+        assert GameState.RUNNING.can_transition_to(GameState.STOPPED)
 
     def test_paused_to_running(self) -> None:
-        assert is_valid_transition(GameState.PAUSED, GameState.RUNNING)
+        assert GameState.PAUSED.can_transition_to(GameState.RUNNING)
 
     def test_paused_to_stopped(self) -> None:
-        assert is_valid_transition(GameState.PAUSED, GameState.STOPPED)
+        assert GameState.PAUSED.can_transition_to(GameState.STOPPED)
 
     def test_stopped_to_running(self) -> None:
-        assert is_valid_transition(GameState.STOPPED, GameState.RUNNING)
+        assert GameState.STOPPED.can_transition_to(GameState.RUNNING)
 
     def test_stopped_to_shutdown(self) -> None:
-        assert is_valid_transition(GameState.STOPPED, GameState.SHUTDOWN)
+        assert GameState.STOPPED.can_transition_to(GameState.SHUTDOWN)
 
     def test_error_to_created(self) -> None:
-        assert is_valid_transition(GameState.ERROR, GameState.CREATED)
+        assert GameState.ERROR.can_transition_to(GameState.CREATED)
 
     def test_error_to_shutdown(self) -> None:
-        assert is_valid_transition(GameState.ERROR, GameState.SHUTDOWN)
+        assert GameState.ERROR.can_transition_to(GameState.SHUTDOWN)
 
     def test_shutdown_no_transitions(self) -> None:
         for state in GameState:
             if state is GameState.SHUTDOWN:
                 continue
-            assert not is_valid_transition(GameState.SHUTDOWN, state)
+            assert not GameState.SHUTDOWN.can_transition_to(state)
 
     def test_invalid_transition(self) -> None:
-        assert not is_valid_transition(GameState.CREATED, GameState.RUNNING)
+        assert not GameState.CREATED.can_transition_to(GameState.RUNNING)
 
     def test_validate_transition_passes(self) -> None:
-        validate_transition(GameState.CREATED, GameState.INITIALIZED)
+        GameState.CREATED.validate_transition(GameState.INITIALIZED)
 
     def test_validate_transition_raises(self) -> None:
         with pytest.raises(PluginStateError, match="Cannot transition"):
-            validate_transition(GameState.CREATED, GameState.RUNNING)
+            GameState.CREATED.validate_transition(GameState.RUNNING)
 
 
 class TestPluginMetadata:
@@ -132,7 +132,7 @@ class TestPluginMetadata:
 
 class TestGameContext:
     def test_minimal(self) -> None:
-        ctx = GameContext(config={}, logger=None, event_bus=None)  # type: ignore[arg-type]
+        ctx = GameContext(config={}, logger=None, event_bus=None)
         assert ctx.config == {}
         assert ctx.logger is None
         assert ctx.event_bus is None

@@ -1,2 +1,12 @@
-name: ExampleGame
+name: My Game
+id: my_game
+author: Your Name
 version: 1.0.0
+description: A short description of what this plugin automates.
+supported_platforms:
+  - windows
+  - linux
+  - android
+minimum_framework_version: 1.0.0
+capabilities: []
+priority: 100

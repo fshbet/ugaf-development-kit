@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ugaf.core.config import Config
+from ugaf.core.di import DependencyContainer
 from ugaf.core.event_bus import Event, EventBus
 from ugaf.core.logger import Logger, get_logger
 from ugaf.plugins.lifecycle import PluginLifecycle
@@ -168,7 +169,9 @@ class PluginManager:
         if plugin_cls is None:
             raise KeyError(f"Plugin {plugin_id!r} is not registered")
 
-        metadata = _find_metadata(self._registry, plugin_id)
+        metadata = self._registry.get_metadata(plugin_id)
+        if metadata is None:
+            raise KeyError(f"Plugin {plugin_id!r} has no metadata")
         event_bus = self._event_bus or EventBus(logger=self._logger)
         plugin = plugin_cls()
         lifecycle = PluginLifecycle(
@@ -294,17 +297,38 @@ class PluginManager:
     def _get_or_create_context(self) -> GameContext:
         """Create the game context if it does not exist yet."""
         if self._context is None:
+            container = DependencyContainer()
+            self._register_vision_services(container)
+
             self._context = GameContext(
                 config=self._config,
                 logger=self._logger,
                 event_bus=self._event_bus or EventBus(logger=self._logger),
+                service_container=container,
             )
         return self._context
 
+    def _register_vision_services(self, container: DependencyContainer) -> None:
+        """Register imaging and vision services in the DI container.
 
-def _find_metadata(registry: PluginRegistry, plugin_id: str) -> PluginMetadata:
-    """Find metadata for a registered plugin."""
-    for meta in registry.list():
-        if meta.id == plugin_id:
-            return meta
-    raise KeyError(f"Plugin {plugin_id!r} is not registered")
+        If OpenCV is not available the services are skipped with a
+        warning rather than failing.
+        """
+        try:
+            from ugaf.imaging.manager import ImagingManager
+
+            imaging = ImagingManager(config=self._config)
+        except Exception:
+            self._logger.warning("plugin_manager.imaging_unavailable")
+            return
+
+        try:
+            from ugaf.vision.manager import VisionManager
+
+            vision = VisionManager(imaging=imaging, config=self._config)
+        except Exception:
+            self._logger.warning("plugin_manager.vision_unavailable")
+            return
+
+        container.register_singleton(ImagingManager, imaging)
+        container.register_singleton(VisionManager, vision)

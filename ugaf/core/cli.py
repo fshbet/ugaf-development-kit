@@ -17,7 +17,7 @@ __all__ = [
     "run_cli",
 ]
 
-_UGAF_VERSION = "1.0.0a1"
+_UGAF_VERSION = "1.0.0a5"
 
 
 @dataclass
@@ -134,35 +134,30 @@ async def _cmd_health(config_path: Path, games_dir: Path) -> int:
 async def _cmd_plugins(config_path: Path, games_dir: Path) -> int:
     """Execute the ``plugins`` command.
 
-    Discovers and lists all plugins.
+    Discovers and lists all SDK game plugins.
 
     """
     app = Application(config_path=config_path, games_dir=games_dir)
     await app.initialize()
 
-    plugins = app.plugin_loader
-    if plugins is None:
-        print("Plugin loader not available")
+    manager = app.plugin_manager
+    if manager is None:
+        print("Plugin manager not available")
         return 1
 
-    discovered = plugins.discover()
+    discovered = manager.discover()
     if not discovered:
         print("No plugins discovered")
         return 0
 
     print(f"Discovered {len(discovered)} plugin(s):\n")
-    for plugin in discovered:
-        print(f"  {plugin.manifest.name} v{plugin.manifest.version}")
-        print(f"    Directory: {plugin.directory}")
-        modules = []
-        if plugin.bot_module:
-            modules.append("bot")
-        if plugin.vision_module:
-            modules.append("vision")
-        if plugin.strategy_module:
-            modules.append("strategy")
-        if modules:
-            print(f"    Modules: {', '.join(modules)}")
+    for metadata in discovered:
+        print(f"  {metadata.name} v{metadata.version} ({metadata.id})")
+        print(f"    Author: {metadata.author}")
+        if metadata.capabilities:
+            caps = ", ".join(cap.value for cap in metadata.capabilities)
+            print(f"    Capabilities: {caps}")
+        print(f"    Priority: {metadata.priority}")
         print()
 
     return 0

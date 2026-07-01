@@ -7,6 +7,5 @@ supported_platforms:
   - windows
   - linux
 minimum_framework_version: 1.0.0
-capabilities:
-  - input
+capabilities: []
 priority: 100

@@ -95,6 +95,18 @@ class PluginRegistry:
         """
         return self._plugins.get(plugin_id)
 
+    def get_metadata(self, plugin_id: str) -> PluginMetadata | None:
+        """Look up plugin metadata by its identifier.
+
+        Args:
+            plugin_id: The plugin identifier.
+
+        Returns:
+            The metadata, or ``None`` if not found.
+
+        """
+        return self._metadata.get(plugin_id)
+
     def find_by_capability(
         self,
         capability: Capability,

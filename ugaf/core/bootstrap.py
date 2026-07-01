@@ -15,7 +15,7 @@ from ugaf.core.exceptions import ApplicationError
 from ugaf.core.health import HealthRegistry, HealthResult, HealthStatus
 from ugaf.core.logger import Logger, configure_logger, get_logger
 from ugaf.core.platform import detect_platform
-from ugaf.core.plugin_loader import PluginLoader
+from ugaf.plugins.manager import PluginManager
 
 __all__ = [
     "Application",
@@ -29,7 +29,7 @@ class Application:
     """Top-level application container.
 
     Wires together ``Config``, ``Logger``, ``EventBus`` and
-    ``PluginLoader``, then manages the lifecycle.
+    ``PluginManager``, then manages the lifecycle.
 
     Usage::
 
@@ -60,7 +60,7 @@ class Application:
         self.config: Config | None = None
         self.logger: Logger | None = None
         self.event_bus: EventBus | None = None
-        self.plugin_loader: PluginLoader | None = None
+        self.plugin_manager: PluginManager | None = None
         self._container = DependencyContainer()
         self._health_registry: HealthRegistry | None = None
         self._running = False
@@ -86,14 +86,17 @@ class Application:
         self.logger = logger
         self.event_bus = EventBus(logger=logger)
 
-        self.plugin_loader = PluginLoader(
-            games_dir=self._games_dir,
+        self.plugin_manager = PluginManager(
+            config=self.config,
             logger=logger,
+            event_bus=self.event_bus,
+            games_dir=self._games_dir,
         )
 
         self._health_registry = HealthRegistry()
         self._health_registry.register("config", self._check_config_health)
         self._health_registry.register("event_bus", self._check_event_bus_health)
+        self._health_registry.register("plugin_manager", self._check_plugin_manager_health)
 
         logger.info("app.initialized", config_path=str(self._config_path))
 
@@ -118,9 +121,10 @@ class Application:
             Event(topic="app.starting", data={"config_path": str(self._config_path)})
         )
 
-        if self.plugin_loader is not None:
-            self.plugin_loader.discover()
-            await self.plugin_loader.start_all(event_bus)
+        if self.plugin_manager is not None:
+            self.plugin_manager.discover()
+            await self.plugin_manager.initialize_all()
+            await self.plugin_manager.start_all()
 
         await event_bus.publish(
             Event(topic="app.started", data={"config_path": str(self._config_path)})
@@ -146,8 +150,9 @@ class Application:
 
         await event_bus.publish(Event(topic="app.stopping"))
 
-        if self.plugin_loader is not None:
-            await self.plugin_loader.stop_all(event_bus)
+        if self.plugin_manager is not None:
+            await self.plugin_manager.stop_all()
+            await self.plugin_manager.shutdown_all()
 
         await event_bus.publish(Event(topic="app.stopped"))
         logger.info("app.stopped")
@@ -220,18 +225,18 @@ class Application:
             raise ApplicationError("Application is not initialized")
         logger = self.logger
         event_bus = self.event_bus
-        plugin_loader = self.plugin_loader
+        plugin_manager = self.plugin_manager
         health_registry = self._health_registry
         assert logger is not None
         assert event_bus is not None
-        assert plugin_loader is not None
+        assert plugin_manager is not None
         assert health_registry is not None
         return AppContext(
             config=self.config,
             logger=logger,
             event_bus=event_bus,
             container=self._container,
-            plugin_loader=plugin_loader,
+            plugin_manager=plugin_manager,
             health_registry=health_registry,
             platform=detect_platform(),
         )
@@ -271,4 +276,19 @@ class Application:
             status=HealthStatus.HEALTHY,
             component="event_bus",
             message="Event bus operational",
+        )
+
+    async def _check_plugin_manager_health(self) -> HealthResult:
+        """Verify that the plugin manager is available."""
+        if self.plugin_manager is None:
+            return HealthResult(
+                status=HealthStatus.ERROR,
+                component="plugin_manager",
+                message="Plugin manager not available",
+            )
+        registered = len(self.plugin_manager.registry.list())
+        return HealthResult(
+            status=HealthStatus.HEALTHY,
+            component="plugin_manager",
+            message=f"{registered} plugin(s) registered",
         )

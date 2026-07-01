@@ -1,0 +1,108 @@
+# UGAF Project Status — Source-Verified Audit
+
+**Generated:** 2026-07-01
+**Method:** Every claim below was verified by reading actual source code, running the test suite, running static analysis, and checking import/wiring paths — not by reading existing markdown docs. Markdown docs (ROADMAP.md, sprint reports, etc.) were treated as claims to be checked, not facts. Where a doc's claim was checked and found accurate, that is noted explicitly.
+
+## Executive Summary
+
+The codebase is higher-quality *per module* than typical alpha software — clean typing, structlog logging, real DI, real event bus, genuinely working OpenCV-backed vision. But the project has **one critical architectural defect that undermines the whole "framework"**: there are two independent, incompatible plugin systems, and the one that is actually wired into the application entry point (`ugaf/core/cli.py` → `ugaf/core/bootstrap.py`) is the **dead-end legacy one that never executes plugin code**. The real, tested, capability-checked SDK plugin system (`ugaf/plugins/*` driving `ugaf/sdk/game.GamePlugin`) is fully built and unit-tested but is never instantiated by the application. Running `ugaf start` today would discover plugins via the legacy loader, flip a `started` boolean, and fire generic events — it would never call `initialize()`/`start()` on any actual game plugin.
+
+This is not a fabricated-progress problem — the project's own untracked sprint reports (`SPRINT_VALIDATION_REPORT.md`, `SPRINT_05_RELEASE_REPORT.md`) already flag this as a known critical defect and rate the release "BETA-READY (not production-ready)". The problem is that `KNOWN_LIMITATIONS.md`, `GAME_PLUGIN_SDK.md`, and `PLUGIN_ARCHITECTURE.md` were never updated to reflect it, so a reader of just those three docs would not know two systems exist.
+
+Secondary finding: the ADB input subsystem described in the project directive ("robust ADB connection manager: reconnect automatically, monitor authorization, recover from disconnects/server restarts, expose device events") **does not exist**. What exists is a single one-shot `adb devices` shell-out plus a generic bounded retry loop around the *initial* connection attempt. There is no persistent monitoring, no offline/unauthorized state discrimination, no ADB-server-restart recovery, and no multi-device support.
+
+## Build / Quality Snapshot (verified by running tools, not reading docs)
+
+| Check | Result |
+|---|---|
+| `pytest` | **415 / 415 passed** (3.0s) |
+| `ruff check .` | **All checks passed**, 0 warnings |
+| `ruff format --check .` | **97 files already formatted**, 0 diffs |
+| `mypy ugaf` (strict mode) | **Success: no issues found in 58 source files** |
+| Overall statement coverage | **79%** (2563 stmts, 531 missed) — see gaps below; this number is misleading in isolation |
+| CI/CD pipeline | **Does not exist.** No `.github/workflows/`, no `.gitlab-ci.yml`, no other CI config found anywhere in the repo |
+| Python target | 3.13+ declared, tested here on 3.14.6 |
+| Dependencies installed in this environment | `pyyaml`, `structlog`, `cv2` 4.13.0, `numpy` 2.3.5 present; `pytesseract` **absent** (OCR has no backend to bind to even if implemented) |
+
+Full detail in [BUILD_STATUS.md](BUILD_STATUS.md).
+
+## Critical Finding #1 — Dual, Incompatible Plugin Systems (confirmed, not speculative)
+
+**System A — Legacy (wired into the app, does nothing functional):**
+- `ugaf/core/plugin_loader.py` (`PluginLoader`) — scans `games/*/manifest.yaml` (expects flat `name`/`version` fields), optionally imports raw `bot.py`/`vision.py`/`strategy.py` modules but **never calls any function inside them**. `start_all()`/`stop_all()` just flip a `started: bool` and publish generic `plugin.started`/`plugin.stopped` events (plugin_loader.py:158–202).
+- `ugaf/core/plugin.py` (`PluginInstance`, `PluginState`) — a full state-machine implementation (6 states, transition table, event publishing) that is **entirely dead code**. Confirmed via repo-wide grep: nothing outside `ugaf/core/plugin.py` itself imports `PluginInstance` or `PluginState`. 0% test coverage, 61 statements, unreachable.
+- Wired via `ugaf/core/bootstrap.py:18,89,122-123` (`Application.__init__`/`.start()`) and surfaced through `ugaf/core/cli.py`'s `start`/`plugins` commands.
+
+**System B — SDK-based (fully built, tested, correct — and orphaned):**
+- `ugaf/sdk/game.py` (`GamePlugin` ABC: `initialize/start/pause/resume/stop/shutdown/health`), `ugaf/sdk/metadata.py`, `ugaf/sdk/state.py` (`GameState` with a real transition-validation state machine), `ugaf/sdk/events.py`, `ugaf/sdk/context.py`.
+- `ugaf/plugins/loader.py` (`PluginLoader`) discovers `games/*/manifest.yaml` + `plugin.py`, validates the manifest via `ugaf/plugins/validator.py` (`PluginValidator` — real semver checks, capability enum validation, framework-version compatibility check, priority range check), and imports the module to find a concrete `GamePlugin` subclass.
+- `ugaf/plugins/lifecycle.py` (`PluginLifecycle`) correctly drives the real lifecycle methods on the plugin instance, converts exceptions to `plugin.failed` events, and maps state → event topic.
+- `ugaf/plugins/manager.py` (`PluginManager`) orchestrates discovery → registry → lifecycle for all plugins, including priority-ordered `start_all`/`pause_all`/`stop_all`/`shutdown_all`, and — notably — is the piece of code that actually wires up `ImagingManager`/`VisionManager` into the DI container (`_register_vision_services`, lines 311–334).
+- **`PluginManager` is never imported or instantiated anywhere under `ugaf/core/`.** Confirmed by grep: zero references to `ugaf.plugins.manager` or `PluginManager` outside `ugaf/plugins/` itself and its tests.
+- The only real example plugin, `games/example_game/plugin.py`, targets System B exclusively (`from ugaf.sdk.game import GamePlugin`), and its `manifest.yaml` uses System-B-style fields (`id`, `capabilities`, `priority`). It would be silently skipped or mishandled by System A's loader expectations, and System A's `Application` never runs System B's loader at all — so **the one working example plugin in the repo cannot actually be started by `ugaf start` today.**
+- Bonus inconsistency found: `games/example_game/plugin.py:19` declares `capabilities=[]` while its own `manifest.yaml:10-12` declares `capabilities: [input]` — a real, minor authoring bug in the one example that exists.
+
+**Doc consistency check:** `GAME_PLUGIN_SDK.md` (1 line) describes System B's lifecycle; `PLUGIN_ARCHITECTURE.md` (1 line) describes System A's file layout (`bot.py`/`vision.py`/`strategy.py`). They contradict each other and neither flags that the other system exists. `KNOWN_LIMITATIONS.md` documents only System A's behavior as if it were the sole plugin system. The untracked `SPRINT_VALIDATION_REPORT.md` (line 29) and `SPRINT_05_RELEASE_REPORT.md` (lines 69, 131) already correctly flag this exact defect as "Critical" / unresolved technical debt — those two reports are the most trustworthy documents in the repo; the rest of the docs have not caught up to them.
+
+**Required fix (not yet made, flagging for planning):** `ugaf/core/bootstrap.py` needs to be repointed at `ugaf.plugins.manager.PluginManager` instead of `ugaf.core.plugin_loader.PluginLoader`, `ugaf/core/plugin.py` and `ugaf/core/plugin_loader.py` should be deleted as dead code (after confirming no external consumer depends on them), and `PLUGIN_ARCHITECTURE.md`/`KNOWN_LIMITATIONS.md` need rewriting to describe System B only.
+
+## Critical Finding #2 — ADB "Robust Reconnection Subsystem" Does Not Exist
+
+Per-file reality (`ugaf/input/adb.py`, `~55%` functionally complete):
+- `connect()` issues **one** `subprocess.run(["adb", "devices"])` call, parses tab-delimited output, and picks/validates a device. No loop, no polling.
+- Devices in `unauthorized` or `offline` ADB state are **silently indistinguishable from "no device"** — the parser only matches lines ending in `"device"`, so a real user plugging in a phone that needs USB-debugging authorization gets a generic `DeviceNotFoundError` with no diagnostic hint.
+- `disconnect()` just clears local state — issues no actual ADB command.
+- The ADB binary being entirely absent from PATH raises an **uncaught `FileNotFoundError`** rather than the framework's own `ConnectionFailedError` — only non-zero exit codes are handled.
+- `key_up()` is `pass`-only (documented, deliberate — ADB has no key-up concept).
+- No `adb kill-server`/`start-server` recovery, no continuous device-state monitor, no device-event stream, no concurrent multi-device orchestration.
+
+What *does* exist: `ugaf/input/manager.py` has a real, generic, bounded retry loop (`for attempt in range(1, retry_count+1)` with `time.sleep`) around the **initial** `provider.connect()` call — this is reconnect-on-startup-failure, not the mid-session monitoring/recovery the project directive calls for.
+
+`ugaf/core/platform.py` has genuine OS/WSL detection logic but is **never consulted** for input-provider selection — the ADB-vs-Windows choice is 100% manual config (`input.provider` key), not platform-detected, despite `platform.py` existing seemingly for that purpose.
+
+**Test coverage note:** `test_input_adb.py` genuinely mocks `subprocess.run` and asserts real argv construction (not vacuous), but a test named `test_connect_retries_after_transport_error` does not actually test retry-on-transport-error — it feeds three consecutive successful calls, so the name overstates what's verified.
+
+## Per-Module Completion Assessment
+
+Estimates are based on working-logic coverage, not line count, and factor in the audits above.
+
+| Module | Completion | Notes |
+|---|---|---|
+| `ugaf/core/config.py` | **95%** | Real YAML load, deep-merge, env-var override with type coercion, dotted-key access. Only gap: no schema validation (structural dict-check only), no secrets masking (`__repr__` dumps everything). Well tested (96% line coverage, 14 tests). |
+| `ugaf/core/event_bus.py` | **95%** | Real async pub/sub, correct recursive `*`/`**` wildcard matching, asyncio.Lock-guarded. Well tested (99% coverage, 12 tests covering edge cases). |
+| `ugaf/core/logger.py` | **90%** | Structlog fully wired: console + rotating file handlers, JSON/console render modes, level control. Gap: no correlation/request-ID context propagation. Well tested (99% coverage). |
+| `ugaf/core/di.py` | **70% implemented, ~10% verified** | Genuinely sophisticated: singleton/transient lifetimes, thread-safe registry (`threading.Lock`), real constructor auto-wiring via type hints, real circular-dependency detection via a visiting-set. **Zero dedicated tests exist (`test_di.py` does not exist)** — 35% line coverage, and the *entire* auto-wiring/circular-detection/singleton-caching engine (lines 246–309) is unexercised. One real bug: the lock is held during dict mutation but **not** during the recursive dependency-graph walk, so the "thread-safe for concurrent resolution" docstring claim is not fully accurate. No scoped (request) lifetime, only singleton/transient. |
+| `ugaf/core/health.py` | **90% implemented, ~30% verified** | Real registry with per-check exception isolation. **No `test_health.py` exists.** Docstring claims checks run "concurrently"; implementation is a sequential `for` loop — a real doc/code mismatch. |
+| `ugaf/core/platform.py` | **90% implemented, 0% verified** | Real OS/WSL detection. **No `test_platform.py` exists at all** — not even a smoke test. Output is not consumed anywhere for provider selection (see Finding #2). |
+| `ugaf/core/bootstrap.py` | **65%** | `Application` lifecycle (init/start/stop/run_forever, signal handling, health checks) is real and reasonably tested (63% coverage via `test_bootstrap.py`), but it orchestrates the **wrong plugin system** (Finding #1). |
+| `ugaf/core/cli.py` | **60% implemented, 0% verified** | Real argparse-based CLI with `start`/`stop`/`health`/`plugins`/`version` subcommands, all delegating correctly to `Application`. **0% test coverage — no CLI tests exist at all.** Also inherits Finding #1 (the `plugins`/`start` commands operate on the dead plugin system). |
+| `ugaf/core/plugin.py` | **0% (dead code)** | Fully implemented state machine, but unreachable — nothing imports it. Should be deleted. |
+| `ugaf/core/plugin_loader.py` | **N/A (functional but architecturally wrong)** | Works as designed, but is the legacy system that should be retired per Finding #1. |
+| `ugaf/plugins/*` (loader, validator, registry, lifecycle, manager) | **95% implemented, well tested** | This is the actual production-quality plugin system. Real semver/capability/priority validation, real lifecycle-state-machine enforcement (delegated to `ugaf/sdk/state.GameState`), real DI wiring of vision services. **Its only defect is that nothing outside its own package instantiates it** (Finding #1). |
+| `ugaf/sdk/*` (game, metadata, state, events, context, capabilities, exceptions) | **95%** | Clean, well-typed, well-tested ABC + supporting types. This is solid foundation work. |
+| `ugaf/input/adb.py` | **~55%** | Tap/swipe/text/screenshot mechanics work against a real `adb` shell-out. Connection robustness (the framework's stated top priority) is thin — see Finding #2. |
+| `ugaf/input/manager.py` | **85%** | Real coordinate validation, dry-run mode, generic startup-retry loop, context-manager lifecycle. Solid. |
+| `ugaf/input/windows.py` | **90%** | Genuine `pyautogui`/`keyboard`/`mouse` delegation, correctly gated on library availability. |
+| `ugaf/input/registry.py`, `provider.py`, `types.py`, `exceptions.py` | **95–100%** | Clean, thread-safe (verified by real concurrency tests for the registry), fully tested. |
+| `ugaf/imaging/opencv_backend.py` | **90%** | Real, working `cv2`-backed implementation — resize/rotate/blur/sharpen/threshold/grayscale/draw/template-match/encode-decode all call actual OpenCV functions, no stub branches. |
+| `ugaf/imaging/image.py`, `manager.py`, `backend.py`, `types.py` | **95–100%** | Real, well-tested. |
+| `ugaf/imaging/filters.py`, `formats.py`, `operations.py`, `transforms.py` | **0% functional (pure decoration)** | Each file is a single `X = str` type alias with a docstring listing "supported values." **Nothing in the codebase imports, validates, or dispatches on these names** — confirmed by repo-wide grep. The actual enum-like dispatch is hardcoded separately and redundantly inside `opencv_backend.py`'s internal maps. These four files should either be deleted or actually wired up as the single source of truth. |
+| `ugaf/vision/detector.py`, `matcher.py` | **90%** | Real algorithms: Canny/contour/blob/Hough detection via cv2, hand-rolled IoU-based non-maximum suppression in `matcher.py`. Not placeholders. |
+| `ugaf/vision/manager.py`, `color.py`, `pixel.py`, `region.py`, `screenshot.py`, `provider.py` | **90–100%** | Real composition and pixel/color/region math. Minor cosmetic bug: `vision/provider.py:104-105` has a duplicated `@abstractmethod` decorator (harmless but sloppy). |
+| `ugaf/vision/ocr.py` | **0% functional, honestly labeled** | Both public methods unconditionally raise `OCRError("OCR is not implemented in this release")`. This is the one place where the code is honest about being a stub — docstring and tests both say so plainly. `pytesseract` isn't even installed. `VisionManager.ocr_text()` will always raise in production. |
+| Screenshot capture (`ScreenshotProvider`) | **0% (no concrete implementation exists anywhere)** | `VisionManager` is wired up in production with `screenshot_provider=None` — grep found zero concrete `ScreenshotProvider` subclasses outside a throwaway test class. This means `vision.screenshot()`/`screenshot_region()`/`screenshot_window()` will always raise `ScreenshotError` end-to-end today, even though the manager itself is correctly wired. This is a meaningful, previously-undocumented gap — the vision engine cannot actually see the screen yet. |
+
+## Blockers to Production Readiness (ranked)
+
+1. **Dual plugin system** (Finding #1) — the app cannot currently run any game plugin end-to-end. This blocks everything downstream.
+2. **No screenshot capture implementation** — the vision engine, once reachable, still can't see the screen. Blocks Android automation entirely.
+3. **ADB connection management is not robust** (Finding #2) — directly contradicts the stated top priority ("never assume ADB remains connected").
+4. **No CI/CD** — nothing prevents regressions from merging; all verification here was manual.
+5. **`di.py`, `health.py`, `platform.py` have little-to-no dedicated test coverage** despite `di.py` containing the most architecturally load-bearing logic in `ugaf/core/` (auto-wiring, circular-dependency detection).
+6. **OCR is unimplemented** and has no bound library even installed.
+
+## What Is Genuinely Solid
+
+- Config, logging, event bus, SDK plugin system, imaging backend, vision detector/matcher, input registry/windows-provider are all real, tested, reasonably production-quality code — not scaffolding.
+- Static analysis is completely clean: ruff, ruff-format, and strict mypy all pass with zero issues across 58 source files.
+- The project's own untracked sprint-validation documents are honest self-assessments (rating the release "BETA-READY, not production-ready" and explicitly flagging the dual-plugin-system defect) — this is a good sign for the team's calibration, even though the published-facing docs (ROADMAP, KNOWN_LIMITATIONS, architecture docs) haven't caught up.

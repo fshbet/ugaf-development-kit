@@ -82,6 +82,10 @@ class PluginValidator:
         priority = 100
         raw_priority = data.get("priority", 100)
         if isinstance(raw_priority, int):
+            if not 0 <= raw_priority <= 1000:
+                raise PluginValidationError(
+                    f"priority must be between 0 and 1000, got {raw_priority}"
+                )
             priority = raw_priority
 
         return PluginMetadata(

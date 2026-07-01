@@ -98,7 +98,7 @@ flexible subscription without tight coupling.
 
 ### Context
 
-Module-specific exceptions (`ConfigError`, `PluginLoaderError`) make it
+Module-specific exceptions (`ConfigError`, `EventBusError`) make it
 hard for callers to catch all framework-related errors without knowing
 every module. Tests and framework integrations need a single base type.
 
@@ -108,7 +108,6 @@ Introduce `UGAFError(Exception)` as the common base for all framework
 exceptions. Each module still has its own typed exception:
 - `ConfigError(UGAFError)`
 - `EventBusError(UGAFError)`
-- `PluginLoaderError(UGAFError)`
 - `ApplicationError(UGAFError, RuntimeError)` — double inheritance ensures
   existing `except RuntimeError` handlers still work while also
   appearing as `UGAFError`.
@@ -177,3 +176,46 @@ mechanism).
 - Positive: mypy strict mode compliance without `type: ignore` noise.
 - Negative: Requires maintenance — adding a new public function must
   also update `__all__`.
+
+---
+
+## ADR-007: Retire the legacy plugin loader in favor of the SDK exclusively
+
+- **Status**: Accepted
+- **Date**: 2026-07-01
+- **Supersedes**: The plugin-loading half of ADR-003 and ADR-005 (their `EventBus`/no-dependency-manager
+  conclusions still stand; only "which loader" changes).
+
+### Context
+
+A source-verified repository audit (see `PROJECT_STATUS.md`) found the project had accumulated
+two independent, incompatible plugin systems: `ugaf/core/plugin_loader.py` + `ugaf/core/plugin.py`
+(discovered `manifest.yaml` + optional `bot.py`/`vision.py`/`strategy.py`, but never actually
+invoked any function inside them — plugins were "loaded" but not run), and `ugaf.plugins.*` +
+`ugaf.sdk.game.GamePlugin` (fully implemented, unit-tested, correctly drives the real plugin
+lifecycle). Only the legacy, non-functional loader was wired into `Application`/`cli.py`. The
+project's own untracked sprint-validation reports had already flagged this as a critical defect
+before this ADR was written.
+
+### Decision
+
+Delete `ugaf/core/plugin_loader.py` and `ugaf/core/plugin.py` entirely (including their exports
+from `ugaf/core/__init__.py` and the now-unused `PluginLoaderError`/`PluginLifecycleError`
+exceptions). Rewire `ugaf.core.bootstrap.Application`, `ugaf.core.context.AppContext`, and
+`ugaf.core.cli` to construct and drive `ugaf.plugins.manager.PluginManager` instead. Replace the
+legacy `templates/bot.py`/`strategy.py`/`vision.py`/`manifest.yaml` with a single
+`templates/plugin.py` + SDK-style `templates/manifest.yaml` matching `games/example_game/`.
+
+### Consequences
+
+- Positive: `ugaf start` now actually executes plugin lifecycle code — verified manually by
+  observing `example_game.initialized`/`.started`/`.stopped`/`.shutdown` log events fire during a
+  live `Application.start()`/`stop()` run, which never happened before this change.
+- Positive: One plugin system means one place to fix bugs, one manifest schema, one set of docs.
+- Positive: `ugaf/core/` no longer needs to know about game/plugin concerns at all beyond owning a
+  `PluginManager` instance — plugin-domain logic stays in `ugaf.plugins`/`ugaf.sdk`.
+- Negative: Breaking change for anyone who had authored a plugin against the legacy
+  `bot.py`/`vision.py`/`strategy.py` layout — there was no deprecation window because the legacy
+  loader never worked in the first place (nothing could have depended on its runtime behavior).
+- Negative: `manifest.yaml` and the in-code `metadata` object in `plugin.py` can still drift apart
+  silently (tracked in `KNOWN_LIMITATIONS.md`) — not addressed by this ADR.

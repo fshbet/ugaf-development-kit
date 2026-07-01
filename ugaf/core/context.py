@@ -11,7 +11,7 @@ from ugaf.core.event_bus import EventBus
 from ugaf.core.health import HealthRegistry
 from ugaf.core.logger import Logger
 from ugaf.core.platform import PlatformInfo
-from ugaf.core.plugin_loader import PluginLoader
+from ugaf.plugins.manager import PluginManager
 
 __all__ = [
     "AppContext",
@@ -49,7 +49,8 @@ class AppContext:
         logger: Structured logger instance.
         event_bus: Async publish/subscribe event bus.
         container: Dependency injection container.
-        plugin_loader: Plugin discovery and loading.
+        plugin_manager: SDK plugin discovery, validation, and lifecycle
+            orchestration.
         health_registry: Health check registration.
         platform: Detected platform information.
         version: Framework version string.
@@ -62,9 +63,9 @@ class AppContext:
     logger: Logger
     event_bus: EventBus
     container: DependencyContainer
-    plugin_loader: PluginLoader
+    plugin_manager: PluginManager
     health_registry: HealthRegistry
     platform: PlatformInfo
-    version: str = "1.0.0a1"
+    version: str = "1.0.0a5"
     state: ApplicationState = field(default_factory=ApplicationState)
     extra: dict[str, Any] = field(default_factory=dict)

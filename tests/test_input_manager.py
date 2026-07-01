@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -49,11 +50,11 @@ def _make_provider_cls(**overrides: object) -> type[InputProvider]:
             "wait",
         )
     }
-    defaults["is_connected"] = lambda s: True
-    defaults["take_screenshot"] = lambda s, path=None: None
-    defaults["screen_size"] = property(lambda s: (1920, 1080))
-    defaults["__init__"] = lambda s, config=None: None
-    defaults.update(overrides)
+    defaults["is_connected"] = lambda s: True  # type: ignore[misc,assignment]
+    defaults["take_screenshot"] = lambda s, path=None: None  # type: ignore[misc]
+    defaults["screen_size"] = property(lambda s: (1920, 1080))  # type: ignore[assignment]
+    defaults["__init__"] = lambda s, config=None: None  # type: ignore[misc]
+    defaults.update(overrides)  # type: ignore[arg-type]
     return type("_DynamicInputProvider", (InputProvider,), defaults)
 
 
@@ -69,13 +70,13 @@ class _MockProvider(InputProvider):
         provider.mock.connect.assert_called_once()
     """
 
-    def __init__(self, config: dict | None = None) -> None:
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
         self._config = config or {}
         self.mock = MagicMock(spec=InputProvider)
 
     @property
     def screen_size(self) -> tuple[int, int]:
-        return self.mock.screen_size
+        return self.mock.screen_size  # type: ignore[no-any-return]
 
     def connect(self) -> None:
         self.mock.connect()
@@ -84,7 +85,7 @@ class _MockProvider(InputProvider):
         self.mock.disconnect()
 
     def is_connected(self) -> bool:
-        return self.mock.is_connected()
+        return self.mock.is_connected()  # type: ignore[no-any-return]
 
     def click(self, x: int, y: int, button: Button = "left") -> None:
         self.mock.click(x, y, button=button)
@@ -135,7 +136,7 @@ class _MockProvider(InputProvider):
         self.mock.wait(seconds)
 
     def take_screenshot(self, path: str | None = None) -> bytes | None:
-        return self.mock.take_screenshot(path=path)
+        return self.mock.take_screenshot(path=path)  # type: ignore[no-any-return]
 
 
 # ---------------------------------------------------------------------------

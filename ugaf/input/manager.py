@@ -45,7 +45,7 @@ def _validate_coordinates(
         width, height = screen_size
         if x < 0 or x >= width or y < 0 or y >= height:
             raise CoordinateOutOfBoundsError(
-                f"Coordinates ({x}, {y}) out of bounds for " f"screen size ({width}x{height})"
+                f"Coordinates ({x}, {y}) out of bounds for screen size ({width}x{height})"
             )
 
 
@@ -149,10 +149,7 @@ class InputManager:
                 )
                 return
 
-        msg = (
-            f"Failed to connect to {provider_name!r} provider "
-            f"after {self._retry_count} attempts"
-        )
+        msg = f"Failed to connect to {provider_name!r} provider after {self._retry_count} attempts"
         raise ConnectionFailedError(msg) from last_exc
 
     def disconnect(self) -> None:

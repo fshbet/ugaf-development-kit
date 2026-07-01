@@ -60,13 +60,21 @@ class GamePlugin(ABC):
     async def start(self) -> None:
         """Begin the plugin's main activity."""
 
-    @abstractmethod
     async def pause(self) -> None:
-        """Temporarily suspend the plugin's activity."""
+        """Temporarily suspend the plugin's activity.
 
-    @abstractmethod
+        Override this method if the plugin needs to perform work
+        when paused. The default implementation is a no-op.
+
+        """
+
     async def resume(self) -> None:
-        """Resume after a pause."""
+        """Resume after a pause.
+
+        Override this method if the plugin needs to perform work
+        when resuming. The default implementation is a no-op.
+
+        """
 
     @abstractmethod
     async def stop(self) -> None:
@@ -76,11 +84,14 @@ class GamePlugin(ABC):
     async def shutdown(self) -> None:
         """Release all resources. This is the terminal lifecycle step."""
 
-    @abstractmethod
     async def health(self) -> dict[str, Any]:
         """Return the current health status of the plugin.
+
+        Override this method to provide custom health information.
+        The default implementation returns ``{"status": "healthy"}``.
 
         Returns:
             A dictionary with at least a ``"status"`` key.
 
         """
+        return {"status": "healthy"}
