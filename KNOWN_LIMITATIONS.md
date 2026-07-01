@@ -39,6 +39,46 @@ the framework's only plugin system — the previously-coexisting legacy loader
   prevent other plugins from loading, but also means a typo in a manifest can silently produce
   "0 plugins discovered" with no obvious error unless log output is inspected.
 
+## Platform Abstraction Layer
+
+- **No Linux or macOS adapters yet**. `ugaf.platform`'s Display, Clipboard, and
+  Notifications interfaces have Windows-only concrete adapters. File System, Network,
+  and Process Management have one cross-platform default adapter each (backed by
+  portable stdlib modules), which is by design, not a gap.
+- **`DeviceProvider` and `AccessibilityProvider` have no concrete adapters at all** —
+  interfaces only, deferred to Milestone 3 (Device Manager) and Milestone 4 (Android
+  Transport) respectively. Do not build against them expecting real behavior yet.
+- **No platform-aware auto-selection in `AdapterRegistry`**. Callers must explicitly
+  request an adapter by name (e.g. `display_registry.create("windows")`); there is no
+  helper that picks the right adapter for the current OS the way
+  `InputManager.connect()` now does for `InputProvider` (see `PLATFORM_ABSTRACTION.md`).
+- **`WindowsNotificationProvider` shells out to `powershell`/`pwsh` per call** — no
+  update/dismiss support, no click callbacks, and a real (if small) process-spawn cost
+  per notification.
+
+## Device Manager
+
+- **Resolved (was here): `AdbInputProvider`'s device-state parsing duplication.**
+  `AdbInputProvider` now delegates device enumeration and shell execution to
+  `AdbDeviceProvider` (see `ARCHITECTURE_DECISIONS.md` ADR-012) — there is exactly one
+  ADB device-state parser in the codebase now, and `AdbInputProvider.connect()` itself
+  (not just `InputManager`'s optional pre-flight check) reports precise
+  online/offline/unauthorized status.
+- **No wireless ADB pairing support**. `AdbDeviceProvider` only shells out to a local
+  `adb` binary already configured with whatever devices are paired/connected — it does
+  not implement the Android 11+ QR-code/pairing-code TLS handshake itself.
+- **No UIAutomator2, scrcpy, or Accessibility Service transports yet** — only ADB. See
+  `ANDROID_TRANSPORT_STRATEGY.md` for the evaluation and why these are deferred to
+  Milestones 4/5, not skipped.
+- **`DeviceManager.execute_shell()`'s restart-and-retry recovery is ADB-specific in
+  practice** — it works for any transport implementing the optional
+  `restart_server()` capability, but only `AdbDeviceProvider` does so today.
+- **No multi-device concurrent command execution helper** — `execute_shell()` targets
+  one device per call; fanning out to multiple devices is the caller's responsibility.
+- **Device capability discovery is limited to whatever `adb shell getprop` reports**
+  in `DeviceInfo.extra` — there is no structured `DeviceCapabilities` taxonomy yet
+  (deferred to Milestone 6, Capability-Based Architecture).
+
 ## Event Bus
 
 - **No subscriber timeout**. A slow or hanging handler blocks all

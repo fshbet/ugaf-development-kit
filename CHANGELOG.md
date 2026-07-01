@@ -1,5 +1,129 @@
 # Changelog
 
+## Unreleased
+
+### Governance audit fix: eliminated ADB device-parsing duplication
+
+#### Fixed
+
+- **`ugaf.input.adb.AdbInputProvider`** no longer has its own `adb devices` parser
+  (which only recognized the literal `"device"` state, silently treating
+  `offline`/`unauthorized` as "not found" — the exact defect the original repository
+  audit flagged). It now delegates to `ugaf.device.adb_provider.AdbDeviceProvider` for
+  device enumeration and shell execution, and accepts an optional `device_provider`
+  constructor parameter to reuse an existing instance. See `ARCHITECTURE_DECISIONS.md`
+  ADR-012. This was deferred twice already (Milestones 3 and 4) as documented "future
+  cleanup" — fixed now per the new continuous technical-debt-elimination governance.
+- **`docs/README.md` / `examples/README.md`**: replaced one-line placeholder stubs with
+  real content pointing to the actual design docs and `games/example_game/`.
+
+#### Changed (test migration)
+
+- `tests/test_input_adb.py`: 32 tests updated to patch
+  `ugaf.device.adb_provider.subprocess.run` (the new actual ADB call site) instead of
+  `ugaf.input.adb.subprocess.run`; added tests for the precise
+  online/offline/unauthorized status messages and the new `device_provider=` injection
+  point.
+
+### Milestone 4: Multi-device input architecture (prerequisite for Robust Android Transport)
+
+#### Added
+
+- **`InputManager(config, device_id=..., device_manager=...)`**: `InputManager` now
+  accepts an explicit target `device_id` (overriding `input.adb.default_device`) and an
+  optional `DeviceManager` reference, enabling multiple `InputManager` instances to
+  share one `Config` while independently targeting different Android devices — see
+  `ARCHITECTURE_DECISIONS.md` ADR-011.
+- **Precise pre-flight device status checks**: when a `device_manager` is supplied,
+  `InputManager.connect()` checks the target device's real status through
+  `AdbDeviceProvider`'s accurate parsing before attempting to connect, raising
+  `DeviceNotFoundError` with the actual state (`unauthorized`/`offline`/etc.) instead of
+  a generic failure.
+- **`PluginManager(..., device_manager=...)`**: registers `DeviceManager` as a DI
+  singleton in every plugin's `GameContext`, so a plugin can resolve it and construct
+  its own per-device `InputManager` instances — verified end-to-end (a plugin resolves
+  the real `Application`-owned `DeviceManager` from its context).
+- **17 new tests** across `test_input_manager.py` and `test_plugin_manager.py`.
+
+#### Documentation
+
+- Added an "Architecture Impact Analysis" precedent to `ARCHITECTURE_DECISIONS.md`
+  (ADR-011) per the new architectural-planning directive requiring this analysis
+  before every future milestone.
+
+### Milestone 3: Device Manager
+
+#### Added
+
+- **`ugaf.device` package**: `DeviceManager` (central orchestrator — the Core Engine
+  and plugins never talk to ADB directly), `AdbDeviceProvider` (real
+  `adb devices -l` parsing that correctly distinguishes `online`/`offline`/
+  `unauthorized`/unknown states, fixing a gap the original audit identified in
+  `ugaf.input.adb.AdbInputProvider`'s narrower parsing), device lifecycle events
+  (`device.discovered`, `device.online`, `device.offline`, `device.unauthorized`,
+  `device.lost`), retrying command execution with ADB-server-restart recovery, and
+  optional property enrichment via `adb shell getprop`.
+- **`Application.device_manager`** / **`AppContext.device_manager`**: wired into
+  bootstrap with a dedicated `device_manager` health check; `device.adb.executable`
+  and `device.monitor.{enabled,interval}` added to `config/default.yaml`.
+- **`ANDROID_TRANSPORT_STRATEGY.md`**: research comparing ADB, UIAutomator2,
+  Accessibility Service, and scrcpy, with sources, informing why ADB is Milestone 3's
+  transport and what the multi-transport roadmap looks like for Milestones 4/5.
+- **38 new tests** (`test_device_adb_provider.py`, `test_device_manager.py`) — 98%
+  coverage of the new package.
+
+#### Fixed
+
+- **Pre-existing circular import** (introduced in Milestone 1, latent):
+  `from ugaf.plugins.manager import PluginManager` failed standalone due to
+  `ugaf.core.__init__` eagerly importing `bootstrap.py`, which imported back into
+  `ugaf.plugins`/`ugaf.device` while those packages were still initializing. Fixed by
+  moving `PluginManager`/`DeviceManager` imports in `bootstrap.py`/`context.py` to
+  `TYPE_CHECKING`-only + lazy runtime imports (ADR-009). Verified: all four previously
+  broken standalone imports now succeed.
+
+### Milestone 2: Platform Abstraction Layer
+
+#### Added
+
+- **Platform Abstraction Layer**: new `ugaf.platform` package with OS-independent
+  interfaces for Display, Clipboard, File System, Network, Accessibility,
+  Notifications, Process Management, and Device enumeration — `ugaf.core` and plugins
+  no longer need to touch OS APIs directly for these concerns. See
+  `PLATFORM_ABSTRACTION.md`.
+- **Real adapters**: `WindowsDisplayProvider` and `WindowsClipboardProvider` (Win32 APIs
+  via `ctypes`), `WindowsNotificationProvider` (`System.Windows.Forms.NotifyIcon` via
+  PowerShell, no extra module required), `LocalFileSystemProvider` (`pathlib`),
+  `DefaultNetworkProvider` (`socket`), `DefaultProcessManager` (`subprocess`) — all
+  verified against the real OS, not just mocked.
+- **`ugaf.platform.registry.AdapterRegistry[T]`**: generic, thread-safe adapter
+  registry generalizing `ugaf.input.registry.InputProviderRegistry`'s pattern across
+  all eight new subsystems (see `ARCHITECTURE_DECISIONS.md` ADR-008).
+- **Platform-aware input provider selection**: `InputManager.connect()` now consults
+  `ugaf.core.platform.detect_platform()` when `input.provider` is not explicitly
+  configured, instead of always defaulting to `"windows"` — closes a gap identified
+  during the repository audit (`detect_platform()` existed but was never consumed).
+- **63 new tests** covering every new `ugaf.platform` module plus the platform-aware
+  input provider default.
+- **`PLATFORM_ABSTRACTION.md`**: new design document for the Platform Abstraction Layer.
+
+#### Fixed
+
+- **64-bit clipboard handle truncation**: an early version of `WindowsClipboardProvider`
+  relied on `ctypes`' default `c_int` return type for `GlobalAlloc`/`GlobalLock`/
+  `GetClipboardData`, which silently truncates 64-bit handles on Win64 and corrupted
+  every clipboard operation. Fixed by setting explicit `argtypes`/`restype`
+  (`c_void_p`) on every handle-returning Win32 call — caught by a real clipboard
+  round-trip test, not a mock.
+
+#### Known limitations (new)
+
+- No Linux/macOS adapters yet for Display, Clipboard, or Notifications.
+- `DeviceProvider`/`AccessibilityProvider` ship as interfaces only — no concrete
+  adapters until Milestones 3 and 4.
+- `AdapterRegistry` has no platform-aware auto-selection helper yet (each subsystem
+  currently has at most one adapter, so there's nothing to choose between).
+
 ## 1.0.0a5 (2026-07-01)
 
 ### Removed (breaking)

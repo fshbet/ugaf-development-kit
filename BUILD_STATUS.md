@@ -2,6 +2,13 @@
 
 **Generated:** 2026-07-01, verified by running each tool directly against the working tree (Python 3.14.6, Windows).
 
+**Note:** the table below is this document's original snapshot (pre-Milestone-1). As of
+the end of Milestone 3 the suite is at **525 tests passing**, ruff/ruff-format/mypy
+strict all still clean, and overall coverage has risen (new `ugaf.platform` package
+94–100% per module, new `ugaf.device` package 98%). See each milestone's CHANGELOG
+entry for the numbers at that point in time; this file is not being continuously
+rewritten to avoid losing the historical baseline it was meant to capture.
+
 ## Summary
 
 | Check | Status | Detail |

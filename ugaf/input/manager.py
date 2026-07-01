@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ugaf.core.config import Config
 from ugaf.core.logger import Logger, get_logger
+from ugaf.core.platform import detect_platform
 from ugaf.input.exceptions import (
     ConnectionFailedError,
     CoordinateOutOfBoundsError,
+    DeviceNotFoundError,
     InputError,
     ProviderNotAvailableError,
 )
@@ -17,6 +19,9 @@ from ugaf.input.provider import InputProvider
 from ugaf.input.registry import InputProviderRegistry
 from ugaf.input.registry import registry as _default_registry
 from ugaf.input.types import Button, Key
+
+if TYPE_CHECKING:
+    from ugaf.device.manager import DeviceManager
 
 __all__ = [
     "InputManager",
@@ -52,6 +57,18 @@ def _validate_coordinates(
 class InputManager:
     """Manages input providers with retry, throttling, and logging.
 
+    One :class:`InputManager` targets exactly one input target (one
+    Windows desktop, or one Android device). This is a deliberate
+    design choice, not an oversight: driving multiple simultaneous
+    Android devices means creating one :class:`InputManager` per
+    device (typically one per :class:`~ugaf.platform.device.DeviceInfo`
+    returned by :class:`~ugaf.device.manager.DeviceManager`), not
+    making a single manager multi-device-aware internally. This keeps
+    per-device state (screen size, connection status, retry state)
+    trivially isolated and lets a future multi-device orchestrator
+    just hold a dict of ``{device_id: InputManager}`` without any
+    change to this class.
+
     Usage::
 
         mgr = InputManager(config)
@@ -59,6 +76,12 @@ class InputManager:
         mgr.click(100, 200)
         mgr.type_text("hello")
         mgr.disconnect()
+
+    Targeting a specific device explicitly (overriding config, useful
+    when driving multiple devices from one process)::
+
+        mgr = InputManager(config, device_id="emulator-5554", device_manager=dm)
+        mgr.connect()
 
     Or as a context manager::
 
@@ -70,6 +93,8 @@ class InputManager:
         self,
         config: Config,
         registry: InputProviderRegistry | None = None,
+        device_id: str | None = None,
+        device_manager: DeviceManager | None = None,
     ) -> None:
         """Initialize the input manager from application configuration.
 
@@ -77,6 +102,18 @@ class InputManager:
             config: Framework configuration object.
             registry: Optional provider registry.  Defaults to the
                 global :data:`~ugaf.input.registry.registry` singleton.
+            device_id: Optional explicit target device serial,
+                overriding ``input.adb.default_device``. Set this to
+                run multiple ``InputManager`` instances against
+                different devices from a single shared ``Config``.
+            device_manager: Optional :class:`~ugaf.device.manager.DeviceManager`.
+                When provided and the ADB provider is selected,
+                ``connect()`` checks the device's real status
+                (online/offline/unauthorized) through it before
+                attempting to connect, giving a precise error instead
+                of ``AdbInputProvider``'s own narrower "not found"
+                check. Optional and decoupled: ``ugaf.input`` does not
+                require ``ugaf.device`` to function standalone.
 
         """
         self._config = config
@@ -88,6 +125,8 @@ class InputManager:
         self._retry_delay: float = float(config.get("input.retry.delay", 0.5))
         self._verbose: bool = bool(config.get("input.verbose", False))
         self._screen_size: tuple[int, int] | None = None
+        self._device_id = device_id
+        self._device_manager = device_manager
 
     @property
     def provider(self) -> InputProvider | None:
@@ -114,11 +153,15 @@ class InputManager:
             ConnectionFailedError: If connecting fails after all retries.
 
         """
-        provider_name: str = str(self._config.get("input.provider", "windows"))
+        configured = self._config.get("input.provider")
+        provider_name = str(configured) if configured is not None else self._default_provider_name()
         self._logger.info(
             "input.connecting",
             provider=provider_name,
         )
+
+        if provider_name == "adb":
+            self._check_device_status_via_manager()
 
         provider_config = self._build_provider_config()
         try:
@@ -302,13 +345,72 @@ class InputManager:
         adb_exec = self._config.get("input.adb.executable")
         if adb_exec is not None:
             cfg["executable"] = str(adb_exec)
-        default_device = self._config.get("input.adb.default_device")
+        default_device = self._target_device_id()
         if default_device is not None:
-            cfg["default_device"] = str(default_device)
+            cfg["default_device"] = default_device
         mouse_delay = self._config.get("input.delays.mouse")
         if mouse_delay is not None:
             cfg["mouse_delay"] = float(mouse_delay)
         return cfg
+
+    def _target_device_id(self) -> str | None:
+        """Return the effective target device serial.
+
+        The explicit ``device_id`` constructor argument always wins
+        over ``input.adb.default_device`` from config, so a caller
+        driving multiple devices can share one ``Config`` object.
+        """
+        if self._device_id is not None:
+            return self._device_id
+        configured = self._config.get("input.adb.default_device")
+        return str(configured) if configured is not None else None
+
+    def _check_device_status_via_manager(self) -> None:
+        """Best-effort pre-flight device status check via ``DeviceManager``.
+
+        Only runs when a ``device_manager`` was supplied and a target
+        device is known. Gives a precise, correctly-classified error
+        (online/offline/unauthorized/unknown) instead of
+        ``AdbInputProvider``'s own narrower "not found" check, without
+        replacing that provider's own ``connect()`` logic.
+
+        Raises:
+            DeviceNotFoundError: If the device is known to
+                ``device_manager`` but not currently ``ONLINE``.
+
+        """
+        if self._device_manager is None:
+            return
+        target = self._target_device_id()
+        if target is None:
+            return
+
+        from ugaf.platform.device import DeviceStatus
+
+        device = self._device_manager.get_device(target)
+        if device is None:
+            devices = self._device_manager.discover()
+            device = next((d for d in devices if d.id == target), None)
+        if device is not None and device.status is not DeviceStatus.ONLINE:
+            raise DeviceNotFoundError(
+                f"Device {target!r} is {device.status.value} (expected online)"
+            )
+
+    def _default_provider_name(self) -> str:
+        """Choose a provider when ``input.provider`` is not configured.
+
+        Consults :func:`ugaf.core.platform.detect_platform` rather
+        than hardcoding a single default: on Windows hosts, the
+        Windows desktop provider is the natural default; on any other
+        host (Linux, macOS, WSL) the only other built-in provider is
+        the ADB one, which matches this framework's primary use case
+        of a non-Windows control machine driving an Android device.
+
+        Returns:
+            ``"windows"`` on Windows, otherwise ``"adb"``.
+
+        """
+        return "windows" if detect_platform().is_windows else "adb"
 
     def _detect_screen_size(self) -> None:
         """Try to detect the screen size from the connected provider."""

@@ -6,6 +6,7 @@ import asyncio
 import signal
 from pathlib import Path
 from types import FrameType
+from typing import TYPE_CHECKING
 
 from ugaf.core.config import Config
 from ugaf.core.context import AppContext
@@ -15,7 +16,13 @@ from ugaf.core.exceptions import ApplicationError
 from ugaf.core.health import HealthRegistry, HealthResult, HealthStatus
 from ugaf.core.logger import Logger, configure_logger, get_logger
 from ugaf.core.platform import detect_platform
-from ugaf.plugins.manager import PluginManager
+
+# Imported only for type checking; the real imports happen lazily
+# inside initialize() to avoid a runtime circular import (see the
+# comment in ugaf/core/context.py for the full cycle).
+if TYPE_CHECKING:
+    from ugaf.device.manager import DeviceManager
+    from ugaf.plugins.manager import PluginManager
 
 __all__ = [
     "Application",
@@ -28,8 +35,9 @@ _DEFAULT_GAMES_DIR = Path("games")
 class Application:
     """Top-level application container.
 
-    Wires together ``Config``, ``Logger``, ``EventBus`` and
-    ``PluginManager``, then manages the lifecycle.
+    Wires together ``Config``, ``Logger``, ``EventBus``,
+    ``PluginManager``, and ``DeviceManager``, then manages the
+    lifecycle.
 
     Usage::
 
@@ -61,6 +69,7 @@ class Application:
         self.logger: Logger | None = None
         self.event_bus: EventBus | None = None
         self.plugin_manager: PluginManager | None = None
+        self.device_manager: DeviceManager | None = None
         self._container = DependencyContainer()
         self._health_registry: HealthRegistry | None = None
         self._running = False
@@ -81,22 +90,34 @@ class Application:
         if self.config is not None:
             raise ApplicationError("Application is already initialized")
 
+        # Local imports: see the TYPE_CHECKING comment above for why
+        # these cannot be module-level imports.
+        from ugaf.device.adb_provider import AdbDeviceProvider
+        from ugaf.device.manager import DeviceManager
+        from ugaf.plugins.manager import PluginManager
+
         self.config = Config(self._config_path)
         logger = configure_logger(self.config)
         self.logger = logger
         self.event_bus = EventBus(logger=logger)
+
+        self.device_manager = DeviceManager(event_bus=self.event_bus, logger=logger)
+        adb_executable = str(self.config.get("device.adb.executable", "adb"))
+        self.device_manager.register_provider("adb", AdbDeviceProvider(executable=adb_executable))
 
         self.plugin_manager = PluginManager(
             config=self.config,
             logger=logger,
             event_bus=self.event_bus,
             games_dir=self._games_dir,
+            device_manager=self.device_manager,
         )
 
         self._health_registry = HealthRegistry()
         self._health_registry.register("config", self._check_config_health)
         self._health_registry.register("event_bus", self._check_event_bus_health)
         self._health_registry.register("plugin_manager", self._check_plugin_manager_health)
+        self._health_registry.register("device_manager", self._check_device_manager_health)
 
         logger.info("app.initialized", config_path=str(self._config_path))
 
@@ -126,6 +147,12 @@ class Application:
             await self.plugin_manager.initialize_all()
             await self.plugin_manager.start_all()
 
+        if self.device_manager is not None:
+            self.device_manager.discover()
+            if self.config is not None and bool(self.config.get("device.monitor.enabled", False)):
+                interval = float(self.config.get("device.monitor.interval", 5.0))
+                await self.device_manager.start_monitoring(interval=interval)
+
         await event_bus.publish(
             Event(topic="app.started", data={"config_path": str(self._config_path)})
         )
@@ -153,6 +180,9 @@ class Application:
         if self.plugin_manager is not None:
             await self.plugin_manager.stop_all()
             await self.plugin_manager.shutdown_all()
+
+        if self.device_manager is not None:
+            await self.device_manager.stop_monitoring()
 
         await event_bus.publish(Event(topic="app.stopped"))
         logger.info("app.stopped")
@@ -226,10 +256,12 @@ class Application:
         logger = self.logger
         event_bus = self.event_bus
         plugin_manager = self.plugin_manager
+        device_manager = self.device_manager
         health_registry = self._health_registry
         assert logger is not None
         assert event_bus is not None
         assert plugin_manager is not None
+        assert device_manager is not None
         assert health_registry is not None
         return AppContext(
             config=self.config,
@@ -237,6 +269,7 @@ class Application:
             event_bus=event_bus,
             container=self._container,
             plugin_manager=plugin_manager,
+            device_manager=device_manager,
             health_registry=health_registry,
             platform=detect_platform(),
         )
@@ -291,4 +324,19 @@ class Application:
             status=HealthStatus.HEALTHY,
             component="plugin_manager",
             message=f"{registered} plugin(s) registered",
+        )
+
+    async def _check_device_manager_health(self) -> HealthResult:
+        """Verify that the device manager is available."""
+        if self.device_manager is None:
+            return HealthResult(
+                status=HealthStatus.ERROR,
+                component="device_manager",
+                message="Device manager not available",
+            )
+        known = len(self.device_manager.list_devices())
+        return HealthResult(
+            status=HealthStatus.HEALTHY,
+            component="device_manager",
+            message=f"{known} device(s) known",
         )

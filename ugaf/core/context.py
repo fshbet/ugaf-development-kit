@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ugaf.core.config import Config
 from ugaf.core.di import DependencyContainer
@@ -11,7 +11,15 @@ from ugaf.core.event_bus import EventBus
 from ugaf.core.health import HealthRegistry
 from ugaf.core.logger import Logger
 from ugaf.core.platform import PlatformInfo
-from ugaf.plugins.manager import PluginManager
+
+# Imported only for type checking to avoid a runtime circular import:
+# ugaf.core -> ugaf.device/ugaf.plugins -> ugaf.core.exceptions ->
+# ugaf.core.__init__ -> ugaf.core.bootstrap -> ugaf.core.context (this
+# module) again, before ugaf.device/ugaf.plugins finish initializing.
+# `from __future__ import annotations` makes this safe at runtime.
+if TYPE_CHECKING:
+    from ugaf.device.manager import DeviceManager
+    from ugaf.plugins.manager import PluginManager
 
 __all__ = [
     "AppContext",
@@ -51,6 +59,8 @@ class AppContext:
         container: Dependency injection container.
         plugin_manager: SDK plugin discovery, validation, and lifecycle
             orchestration.
+        device_manager: Device discovery, health, and command
+            execution across transports (ADB, and future transports).
         health_registry: Health check registration.
         platform: Detected platform information.
         version: Framework version string.
@@ -64,6 +74,7 @@ class AppContext:
     event_bus: EventBus
     container: DependencyContainer
     plugin_manager: PluginManager
+    device_manager: DeviceManager
     health_registry: HealthRegistry
     platform: PlatformInfo
     version: str = "1.0.0a5"

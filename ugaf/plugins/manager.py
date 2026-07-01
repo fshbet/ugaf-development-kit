@@ -12,6 +12,7 @@ from ugaf.core.config import Config
 from ugaf.core.di import DependencyContainer
 from ugaf.core.event_bus import Event, EventBus
 from ugaf.core.logger import Logger, get_logger
+from ugaf.device.manager import DeviceManager
 from ugaf.plugins.lifecycle import PluginLifecycle
 from ugaf.plugins.loader import PluginLoader
 from ugaf.plugins.registry import PluginRegistry
@@ -54,6 +55,7 @@ class PluginManager:
         games_dir: Path | str | None = None,
         registry: PluginRegistry | None = None,
         loader: PluginLoader | None = None,
+        device_manager: DeviceManager | None = None,
     ) -> None:
         """Initialise the plugin manager.
 
@@ -67,6 +69,15 @@ class PluginManager:
                 provided.
             loader: Optional plugin loader.  Creates one if not
                 provided.
+            device_manager: Optional :class:`~ugaf.device.manager.DeviceManager`.
+                When provided, it is registered as a DI singleton in
+                every plugin's :class:`~ugaf.sdk.context.GameContext`,
+                so a plugin can resolve it and build its own
+                per-device ``InputManager`` instances — this is the
+                intended extension point for plugins that drive
+                multiple simultaneous Android devices, rather than
+                ``PluginManager`` prescribing a single global input
+                target.
 
         """
         self._config = config
@@ -75,6 +86,7 @@ class PluginManager:
         self._games_dir = Path(games_dir) if games_dir else Path("games")
         self._registry = registry or PluginRegistry()
         self._loader = loader or PluginLoader(self._games_dir, logger=self._logger)
+        self._device_manager = device_manager
         self._lifecycles: dict[str, PluginLifecycle] = {}
         self._context: GameContext | None = None
 
@@ -299,6 +311,8 @@ class PluginManager:
         if self._context is None:
             container = DependencyContainer()
             self._register_vision_services(container)
+            if self._device_manager is not None:
+                container.register_singleton(DeviceManager, self._device_manager)
 
             self._context = GameContext(
                 config=self._config,

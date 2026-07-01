@@ -219,6 +219,37 @@ class TestPluginManager:
         assert manager._lifecycles["simple"].state.value == "error"
 
 
+class TestDeviceManagerIntegration:
+    """A plugin resolves DeviceManager from its GameContext to build per-device input."""
+
+    async def test_device_manager_resolvable_from_context(
+        self, config: Config, event_bus: EventBus
+    ) -> None:
+        from ugaf.device.manager import DeviceManager
+
+        device_manager = DeviceManager()
+        manager = PluginManager(
+            config=config,
+            event_bus=event_bus,
+            games_dir=Path("nonexistent"),
+            device_manager=device_manager,
+        )
+
+        context = manager._get_or_create_context()
+        resolved = context.service_container.resolve(DeviceManager)
+        assert resolved is device_manager
+
+    async def test_context_without_device_manager_does_not_register_it(
+        self, manager: PluginManager
+    ) -> None:
+        from ugaf.core.di import DependencyInjectionError
+        from ugaf.device.manager import DeviceManager
+
+        context = manager._get_or_create_context()
+        with pytest.raises(DependencyInjectionError):
+            context.service_container.resolve(DeviceManager)
+
+
 def _create_test_plugin(base_dir: Path, plugin_id: str) -> None:
     """Create a minimal valid plugin directory for testing."""
     plugin_dir = base_dir / plugin_id

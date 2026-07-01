@@ -7,13 +7,18 @@ import subprocess
 import time
 from typing import Any
 
+from ugaf.device.adb_provider import AdbDeviceProvider
+from ugaf.device.exceptions import DeviceCommandError, TransportUnavailableError
 from ugaf.input.exceptions import ConnectionFailedError, DeviceNotFoundError
 from ugaf.input.provider import InputProvider
 from ugaf.input.types import Button, Key
+from ugaf.platform.device import DeviceStatus
 
 __all__ = [
     "AdbInputProvider",
 ]
+
+_SCREEN_SIZE_RE = re.compile(r"(\d+)x(\d+)")
 
 # Common Android key codes for ``press_key`` / ``key_down`` / ``key_up``
 _KEYCODE_MAP: dict[str, int] = {
@@ -117,19 +122,38 @@ class AdbInputProvider(InputProvider):
 
     Connects to a physical or emulated Android device over ADB and
     sends touch and key events through the ``input`` shell command.
+
+    Device enumeration and shell execution delegate to
+    :class:`~ugaf.device.adb_provider.AdbDeviceProvider` rather than
+    re-implementing ``adb devices`` parsing here — a prior version of
+    this class had its own narrower parser that only recognized the
+    literal ``"device"`` state and silently treated
+    ``offline``/``unauthorized`` devices as "not found." Reusing the
+    Device Manager's transport keeps device-state classification
+    correct in exactly one place.
     """
 
-    def __init__(self, config: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        device_provider: AdbDeviceProvider | None = None,
+    ) -> None:
         """Initialize the ADB input provider.
 
         Args:
             config: Provider configuration dict (``executable``,
                 ``default_device``).
+            device_provider: Optional :class:`AdbDeviceProvider` to
+                reuse (e.g. the one already owned by a
+                :class:`~ugaf.device.manager.DeviceManager`). Defaults
+                to constructing a new one against the same
+                ``executable``.
 
         """
         self._config = config or {}
         self._adb_path: str = self._config.get("executable", "adb")
         self._device_id: str | None = self._config.get("default_device")
+        self._device_provider = device_provider or AdbDeviceProvider(executable=self._adb_path)
         self._connected = False
         self._screen_width: int = 0
         self._screen_height: int = 0
@@ -143,31 +167,35 @@ class AdbInputProvider(InputProvider):
 
         Raises:
             ConnectionFailedError: If ADB is not available.
-            DeviceNotFoundError: If no device is connected.
+            DeviceNotFoundError: If no device is online, or the
+                configured device exists but is not online (the error
+                message states its actual status).
 
         """
-        result = subprocess.run(
-            [self._adb_path, "devices"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            raise ConnectionFailedError(
-                f"ADB not available (exit code {result.returncode}): {result.stderr.strip()}"
-            )
+        try:
+            devices = self._device_provider.list_devices()
+        except (TransportUnavailableError, DeviceCommandError) as exc:
+            raise ConnectionFailedError(str(exc)) from exc
 
-        devices = self._parse_devices(result.stdout)
-        if not devices:
+        online_ids = [d.id for d in devices if d.status is DeviceStatus.ONLINE]
+        if not online_ids:
+            if devices:
+                statuses = ", ".join(f"{d.id}={d.status.value}" for d in devices)
+                raise DeviceNotFoundError(f"No online Android devices (found: {statuses})")
             raise DeviceNotFoundError("No Android devices connected")
 
         if self._device_id is not None:
-            if self._device_id not in devices:
+            if self._device_id not in online_ids:
+                match = next((d for d in devices if d.id == self._device_id), None)
+                if match is not None:
+                    raise DeviceNotFoundError(
+                        f"Device {self._device_id!r} is {match.status.value} (expected online)"
+                    )
                 raise DeviceNotFoundError(
-                    f"Device {self._device_id!r} not found. Available: {devices}"
+                    f"Device {self._device_id!r} not found. Available: {online_ids}"
                 )
         else:
-            self._device_id = devices[0]
+            self._device_id = online_ids[0]
 
         self._detect_screen_size()
         self._connected = True
@@ -193,24 +221,20 @@ class AdbInputProvider(InputProvider):
         return self._device_id
 
     def list_devices(self) -> list[str]:
-        """List all connected Android devices.
+        """List all currently online Android devices.
 
         Returns:
-            List of device serial numbers.
+            List of device serial numbers with status ``ONLINE``.
 
         Raises:
             ConnectionFailedError: If ADB is not available.
 
         """
-        result = subprocess.run(
-            [self._adb_path, "devices"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            raise ConnectionFailedError(f"ADB not available: {result.stderr.strip()}")
-        return self._parse_devices(result.stdout)
+        try:
+            devices = self._device_provider.list_devices()
+        except (TransportUnavailableError, DeviceCommandError) as exc:
+            raise ConnectionFailedError(str(exc)) from exc
+        return [d.id for d in devices if d.status is DeviceStatus.ONLINE]
 
     # ------------------------------------------------------------------
     # Mouse / touch
@@ -361,39 +385,26 @@ class AdbInputProvider(InputProvider):
             raise ConnectionFailedError("AdbInputProvider is not connected")
 
     def _adb_shell(self, *args: str) -> None:
-        """Run an ADB shell command on the current device."""
+        """Run an ADB shell command on the current device.
+
+        Best-effort: failures are swallowed (matching prior behavior)
+        rather than raised, since input commands (tap/swipe/keyevent)
+        are fire-and-forget from the caller's perspective.
+        """
         assert self._device_id is not None
-        cmd = [self._adb_path, "-s", self._device_id, "shell", *args]
-        subprocess.run(cmd, capture_output=True, timeout=30)
+        try:
+            self._device_provider.shell(self._device_id, *args)
+        except (DeviceCommandError, TransportUnavailableError):
+            pass
 
     def _detect_screen_size(self) -> None:
         """Detect the device screen resolution via ``wm size``."""
         assert self._device_id is not None
-        result = subprocess.run(
-            [self._adb_path, "-s", self._device_id, "shell", "wm", "size"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        match = re.search(r"(\d+)x(\d+)", result.stdout)
+        try:
+            output = self._device_provider.shell(self._device_id, "wm", "size")
+        except (DeviceCommandError, TransportUnavailableError):
+            return
+        match = _SCREEN_SIZE_RE.search(output)
         if match:
             self._screen_width = int(match.group(1))
             self._screen_height = int(match.group(2))
-
-    @staticmethod
-    def _parse_devices(output: str) -> list[str]:
-        """Parse the output of ``adb devices``.
-
-        Args:
-            output: Raw stdout from ``adb devices``.
-
-        Returns:
-            List of connected device serial numbers.
-
-        """
-        devices: list[str] = []
-        for line in output.strip().splitlines():
-            parts = line.split("\t")
-            if len(parts) == 2 and parts[1] == "device":
-                devices.append(parts[0])
-        return devices

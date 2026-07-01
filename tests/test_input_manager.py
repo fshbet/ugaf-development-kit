@@ -13,6 +13,7 @@ from ugaf.core.config import Config
 from ugaf.input.exceptions import (
     ConnectionFailedError,
     CoordinateOutOfBoundsError,
+    DeviceNotFoundError,
     ProviderNotAvailableError,
 )
 from ugaf.input.manager import InputManager, _validate_coordinates
@@ -240,6 +241,47 @@ class TestConnect:
         with pytest.raises(ConnectionFailedError, match="after 2 attempts"):
             mgr.connect()
 
+    def test_default_provider_is_platform_aware(self, tmp_path: Path) -> None:
+        """When ``input.provider`` is unset, the default is derived from detect_platform()."""
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml.dump({}))
+        cfg = Config(cfg_file)
+        windows_cls = _make_provider_cls()
+        adb_cls = _make_provider_cls()
+        reg = InputProviderRegistry()
+        reg.register("windows", windows_cls)
+        reg.register("adb", adb_cls)
+        mgr = InputManager(cfg, registry=reg)
+
+        from ugaf.core.platform import PlatformInfo
+
+        with patch("ugaf.input.manager.detect_platform") as mock_detect:
+            mock_detect.return_value = PlatformInfo(
+                system="Linux",
+                is_wsl=False,
+                is_64bit=True,
+                python_version="3.13.0",
+                machine="x86_64",
+                processor="",
+                release="",
+            )
+            mgr.connect()
+        assert isinstance(mgr._provider, adb_cls)
+
+        mgr2 = InputManager(cfg, registry=reg)
+        with patch("ugaf.input.manager.detect_platform") as mock_detect:
+            mock_detect.return_value = PlatformInfo(
+                system="Windows",
+                is_wsl=False,
+                is_64bit=True,
+                python_version="3.13.0",
+                machine="AMD64",
+                processor="",
+                release="",
+            )
+            mgr2.connect()
+        assert isinstance(mgr2._provider, windows_cls)
+
     def test_context_manager(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text(yaml.dump({"input": {"provider": "ctx_test"}}))
@@ -440,3 +482,149 @@ class TestCoordinateValidation:
 
     def test_no_screen_size_skips_validation(self) -> None:
         _validate_coordinates(-1, -1, None)
+
+
+# ---------------------------------------------------------------------------
+# Tests: device-scoped targeting (Milestone 4)
+# ---------------------------------------------------------------------------
+
+
+class TestDeviceScopedTargeting:
+    def test_device_id_overrides_config_default_device(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            yaml.dump({"input": {"provider": "adb", "adb": {"default_device": "from-config"}}})
+        )
+        cfg = Config(cfg_file)
+        mgr = InputManager(cfg, device_id="explicit-override")
+        assert mgr._target_device_id() == "explicit-override"
+
+    def test_falls_back_to_config_default_device(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            yaml.dump({"input": {"provider": "adb", "adb": {"default_device": "from-config"}}})
+        )
+        cfg = Config(cfg_file)
+        mgr = InputManager(cfg)
+        assert mgr._target_device_id() == "from-config"
+
+    def test_two_managers_share_config_but_target_different_devices(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml.dump({"input": {"provider": "adb"}}))
+        cfg = Config(cfg_file)
+
+        mgr_a = InputManager(cfg, device_id="device-A")
+        mgr_b = InputManager(cfg, device_id="device-B")
+
+        assert mgr_a._target_device_id() == "device-A"
+        assert mgr_b._target_device_id() == "device-B"
+
+    def test_no_device_manager_skips_status_check(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml.dump({"input": {"provider": "adb"}}))
+        cfg = Config(cfg_file)
+        mgr = InputManager(cfg, device_id="device-A")
+        mgr._check_device_status_via_manager()  # should not raise (no device_manager)
+
+    def test_online_device_passes_status_check(self, tmp_path: Path) -> None:
+        from ugaf.device.manager import DeviceManager
+        from ugaf.platform.device import DeviceInfo, DeviceProvider, DeviceStatus
+
+        class _Provider(DeviceProvider):
+            def list_devices(self) -> list[DeviceInfo]:
+                return [
+                    DeviceInfo(
+                        id="device-A",
+                        name="A",
+                        status=DeviceStatus.ONLINE,
+                        platform="android",
+                        transport="fake",
+                    )
+                ]
+
+            def get_device(self, device_id: str) -> DeviceInfo | None:
+                return self.list_devices()[0] if device_id == "device-A" else None
+
+        dm = DeviceManager()
+        dm.register_provider("fake", _Provider())
+        dm.discover()
+
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml.dump({"input": {"provider": "adb"}}))
+        cfg = Config(cfg_file)
+        mgr = InputManager(cfg, device_id="device-A", device_manager=dm)
+        mgr._check_device_status_via_manager()  # should not raise
+
+    def test_unauthorized_device_raises_with_precise_status(self, tmp_path: Path) -> None:
+        from ugaf.device.manager import DeviceManager
+        from ugaf.platform.device import DeviceInfo, DeviceProvider, DeviceStatus
+
+        class _Provider(DeviceProvider):
+            def list_devices(self) -> list[DeviceInfo]:
+                return [
+                    DeviceInfo(
+                        id="device-A",
+                        name="A",
+                        status=DeviceStatus.UNAUTHORIZED,
+                        platform="android",
+                        transport="fake",
+                    )
+                ]
+
+            def get_device(self, device_id: str) -> DeviceInfo | None:
+                return self.list_devices()[0] if device_id == "device-A" else None
+
+        dm = DeviceManager()
+        dm.register_provider("fake", _Provider())
+
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml.dump({"input": {"provider": "adb"}}))
+        cfg = Config(cfg_file)
+        mgr = InputManager(cfg, device_id="device-A", device_manager=dm)
+
+        with pytest.raises(DeviceNotFoundError, match="unauthorized"):
+            mgr._check_device_status_via_manager()
+
+    def test_unknown_device_id_is_not_flagged(self, tmp_path: Path) -> None:
+        """No target device configured: the check is a no-op, not an error."""
+        from ugaf.device.manager import DeviceManager
+
+        dm = DeviceManager()
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml.dump({"input": {"provider": "adb"}}))
+        cfg = Config(cfg_file)
+        mgr = InputManager(cfg, device_manager=dm)
+        mgr._check_device_status_via_manager()  # no device_id at all -> no-op
+
+    def test_connect_with_unauthorized_device_raises_before_provider_created(
+        self, tmp_path: Path
+    ) -> None:
+        from ugaf.device.manager import DeviceManager
+        from ugaf.platform.device import DeviceInfo, DeviceProvider, DeviceStatus
+
+        class _Provider(DeviceProvider):
+            def list_devices(self) -> list[DeviceInfo]:
+                return [
+                    DeviceInfo(
+                        id="device-A",
+                        name="A",
+                        status=DeviceStatus.OFFLINE,
+                        platform="android",
+                        transport="fake",
+                    )
+                ]
+
+            def get_device(self, device_id: str) -> DeviceInfo | None:
+                return self.list_devices()[0] if device_id == "device-A" else None
+
+        dm = DeviceManager()
+        dm.register_provider("fake", _Provider())
+
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml.dump({"input": {"provider": "adb"}}))
+        cfg = Config(cfg_file)
+        mgr = InputManager(cfg, device_id="device-A", device_manager=dm)
+
+        with pytest.raises(DeviceNotFoundError, match="offline"):
+            mgr.connect()
+        assert mgr._provider is None

@@ -26,3 +26,10 @@ vision:
   template_match_method: ccorr_normed
   template_confidence: 0.9
   pixel_threshold: 30.0
+
+device:
+  adb:
+    executable: adb
+  monitor:
+    enabled: false
+    interval: 5.0

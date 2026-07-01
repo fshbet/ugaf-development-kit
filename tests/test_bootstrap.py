@@ -32,6 +32,7 @@ async def test_initialize_creates_services(tmp_path: Path) -> None:
     assert app.logger is not None
     assert app.event_bus is not None
     assert app.plugin_manager is not None
+    assert app.device_manager is not None
     assert app.config.get("logging.level") == "DEBUG"
 
 
@@ -133,6 +134,61 @@ async def test_stop_without_start(tmp_path: Path) -> None:
     # Should not raise even though start() was never called
     await app.stop()
     assert app.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_start_with_device_monitoring_enabled(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path / "config.yaml",
+        {
+            "logging": {"level": "INFO"},
+            "device": {"monitor": {"enabled": True, "interval": 0.01}},
+        },
+    )
+    games_dir = tmp_path / "games"
+    games_dir.mkdir()
+
+    app = Application(config_path=config_path, games_dir=games_dir)
+    await app.initialize()
+    await app.start()
+    assert app.device_manager is not None
+    assert app.device_manager._monitor_task is not None
+
+    await app.stop()
+    assert app.device_manager._monitor_task is None
+
+
+@pytest.mark.asyncio
+async def test_health_reports_all_components(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path / "config.yaml",
+        {"logging": {"level": "INFO"}},
+    )
+    games_dir = tmp_path / "games"
+    games_dir.mkdir()
+
+    app = Application(config_path=config_path, games_dir=games_dir)
+    await app.initialize()
+    results = await app.health()
+
+    components = {r.component for r in results}
+    assert components == {"config", "event_bus", "plugin_manager", "device_manager"}
+    assert all(r.status.value == "healthy" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_context_property_includes_device_manager(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path / "config.yaml",
+        {"logging": {"level": "INFO"}},
+    )
+    games_dir = tmp_path / "games"
+    games_dir.mkdir()
+
+    app = Application(config_path=config_path, games_dir=games_dir)
+    await app.initialize()
+    context = app.context
+    assert context.device_manager is app.device_manager
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,32 @@
 **Generated:** 2026-07-01
 **Method:** Every claim below was verified by reading actual source code, running the test suite, running static analysis, and checking import/wiring paths — not by reading existing markdown docs. Markdown docs (ROADMAP.md, sprint reports, etc.) were treated as claims to be checked, not facts. Where a doc's claim was checked and found accurate, that is noted explicitly.
 
+**2026-07-01 update — Milestones 1–3 landed since this audit was written.** This
+document is preserved as a historical point-in-time snapshot (do not edit the findings
+below to match current reality — that defeats the purpose of an audit trail). Current
+status:
+
+- **Critical Finding #1 (dual plugin systems): resolved.** See `ARCHITECTURE_DECISIONS.md`
+  ADR-007. The legacy loader is deleted; `PluginManager`/`GamePlugin` is the only
+  plugin system, and `Application.start()` now actually executes plugin lifecycle code.
+- **Critical Finding #2 (no robust ADB reconnection): partially addressed.**
+  `ugaf.device.manager.DeviceManager` + `ugaf.device.adb_provider.AdbDeviceProvider`
+  (Milestone 3) now provide real device discovery with correct `online`/`offline`/
+  `unauthorized` state parsing, lifecycle events, polling, and retry-with-restart
+  recovery — see `ANDROID_TRANSPORT_STRATEGY.md` and `ARCHITECTURE_DECISIONS.md`
+  ADR-010. **Not yet done:** `ugaf.input.adb.AdbInputProvider` (the input-injection
+  path) was not migrated onto this new device layer and still has the narrower device
+  parsing described in Finding #2 below — tracked in `KNOWN_LIMITATIONS.md`.
+- A Platform Abstraction Layer (`ugaf.platform`, Milestone 2) now exists for Display,
+  Clipboard, File System, Network, Notifications, Process Management — see
+  `PLATFORM_ABSTRACTION.md`.
+- The per-module completion table and remaining findings below reflect the tree
+  **before** these three milestones and are not reflective of current line numbers or
+  coverage percentages for the files they discuss (`ugaf/core/bootstrap.py`,
+  `ugaf/core/context.py`, `ugaf/core/__init__.py`, `ugaf/core/exceptions.py` in
+  particular have all changed since). For current numbers, see `BUILD_STATUS.md`'s
+  latest run and the CHANGELOG's Milestone entries.
+
 ## Executive Summary
 
 The codebase is higher-quality *per module* than typical alpha software — clean typing, structlog logging, real DI, real event bus, genuinely working OpenCV-backed vision. But the project has **one critical architectural defect that undermines the whole "framework"**: there are two independent, incompatible plugin systems, and the one that is actually wired into the application entry point (`ugaf/core/cli.py` → `ugaf/core/bootstrap.py`) is the **dead-end legacy one that never executes plugin code**. The real, tested, capability-checked SDK plugin system (`ugaf/plugins/*` driving `ugaf/sdk/game.GamePlugin`) is fully built and unit-tested but is never instantiated by the application. Running `ugaf start` today would discover plugins via the legacy loader, flip a `started` boolean, and fire generic events — it would never call `initialize()`/`start()` on any actual game plugin.
