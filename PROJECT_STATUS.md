@@ -19,6 +19,15 @@ status:
   ADR-010. **Not yet done:** `ugaf.input.adb.AdbInputProvider` (the input-injection
   path) was not migrated onto this new device layer and still has the narrower device
   parsing described in Finding #2 below — tracked in `KNOWN_LIMITATIONS.md`.
+  **Update:** this ADB-parsing duplication was resolved in a subsequent governance
+  audit fix — see `ARCHITECTURE_DECISIONS.md` ADR-012. `AdbInputProvider` now delegates
+  to `AdbDeviceProvider` for device enumeration.
+- **Screenshot capture gap (line ~119 below): resolved.** `ugaf.vision.adb_screenshot.
+  AdbScreenshotProvider` (real, `adb exec-out screencap`), `MockScreenshotProvider`,
+  and `ImageReplayProvider` now exist, orchestrated by
+  `ugaf.vision.screenshot_manager.ScreenshotManager` and wired into `VisionManager` via
+  `PluginManager` — verified live that `VisionManager.screenshot()` returns real image
+  data end-to-end. See `SCREENSHOT_CAPTURE_STRATEGY.md` and ADR-013.
 - A Platform Abstraction Layer (`ugaf.platform`, Milestone 2) now exists for Display,
   Clipboard, File System, Network, Notifications, Process Management — see
   `PLATFORM_ABSTRACTION.md`.

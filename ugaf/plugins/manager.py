@@ -336,13 +336,31 @@ class PluginManager:
             self._logger.warning("plugin_manager.imaging_unavailable")
             return
 
+        screenshot_manager = None
+        try:
+            from ugaf.vision.screenshot_manager import ScreenshotManager
+
+            screenshot_manager = ScreenshotManager(config=self._config, imaging=imaging)
+            screenshot_manager.connect()
+        except Exception as exc:
+            self._logger.warning("plugin_manager.screenshot_unavailable", error=str(exc))
+            screenshot_manager = None
+
         try:
             from ugaf.vision.manager import VisionManager
 
-            vision = VisionManager(imaging=imaging, config=self._config)
+            vision = VisionManager(
+                imaging=imaging,
+                screenshot_provider=screenshot_manager,
+                config=self._config,
+            )
         except Exception:
             self._logger.warning("plugin_manager.vision_unavailable")
             return
 
         container.register_singleton(ImagingManager, imaging)
+        if screenshot_manager is not None:
+            from ugaf.vision.screenshot_manager import ScreenshotManager
+
+            container.register_singleton(ScreenshotManager, screenshot_manager)
         container.register_singleton(VisionManager, vision)

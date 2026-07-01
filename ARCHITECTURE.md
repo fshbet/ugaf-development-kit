@@ -30,8 +30,12 @@ Use dependency injection, event bus and configuration-driven design.
   through the same `InputProvider`/`DeviceProvider` interfaces as any other transport —
   ADB is one transport choice, not the architecture.
 - **Vision** (`ugaf.imaging`, `ugaf.vision`): OpenCV-backed image processing, template
-  matching, feature detection; screen capture reachability is a known open gap (see
-  `KNOWN_LIMITATIONS.md`).
+  matching, feature detection, and screen capture. Screenshot capture is
+  provider-based (`ugaf.vision.screenshot.ScreenshotProvider`), orchestrated by
+  `ugaf.vision.screenshot_manager.ScreenshotManager` (provider selection via config,
+  frame caching, bounded retry, async capture with timeout) — see
+  `SCREENSHOT_CAPTURE_STRATEGY.md`. `ScreenshotManager` itself subclasses
+  `ScreenshotProvider`, so it drops into `VisionManager` transparently.
 - **Game SDK / Plugins** (`ugaf.sdk`, `ugaf.plugins`): the `GamePlugin` contract and its
   discovery/validation/lifecycle orchestration — the framework's only plugin system as
   of Milestone 1. `PluginManager` registers `DeviceManager` as a DI singleton in every

@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Screenshot Capture subsystem (closes: "vision engine cannot see the screen")
+
+#### Added
+
+- **CI/CD**: `.github/workflows/ci.yml` running ruff, ruff format check, mypy, pytest
+  with coverage, and a build-validation job, matrixed across `ubuntu-latest` and
+  `windows-latest`. Added `.gitignore` (build/dist/egg-info/caches were previously
+  untracked-but-ungitignored).
+- **`ugaf.vision.adb_screenshot.AdbScreenshotProvider`**: real screenshot capture via
+  `adb exec-out screencap -p` (chosen over `adb shell screencap` + `pull`, scrcpy,
+  MediaProjection, UI Automator, emulator console, and minicap after comparing all six
+  — see `SCREENSHOT_CAPTURE_STRATEGY.md`). Per-device scoped, mirroring
+  `AdbInputProvider`'s design (ADR-011).
+- **`ugaf.vision.mock_screenshot.MockScreenshotProvider`** and **`ImageReplayProvider`**:
+  first-class providers for testing and offline plugin development without a device.
+- **`ugaf.vision.screenshot_manager.ScreenshotManager`**: provider selection via
+  `vision.screenshot_provider` config + a registry (mirroring `InputManager`), frame
+  caching with configurable TTL (no unnecessary copies — cache hits return the same
+  `Image` reference), bounded retry, and async capture with timeout
+  (`capture_full_async`). Subclasses `ScreenshotProvider` itself (ADR-013) so it drops
+  into `VisionManager` with zero API changes.
+- **Wired end-to-end**: `PluginManager` now constructs and connects a
+  `ScreenshotManager` and passes it to `VisionManager` — verified live that
+  `VisionManager.screenshot()` returns real image data through the full DI chain, which
+  never worked before this milestone.
+- **38 new tests** across 4 new test files plus a lightweight cache-effectiveness
+  benchmark, all screenshot modules at 100% coverage.
+
+#### Documentation
+
+- **`SCREENSHOT_CAPTURE_STRATEGY.md`**: research comparing all seven capture
+  mechanisms evaluated, with sources.
+
 ### Governance audit fix: eliminated ADB device-parsing duplication
 
 #### Fixed

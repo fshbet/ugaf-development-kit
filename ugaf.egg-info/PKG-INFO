@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: ugaf
-Version: 1.0.0a1
+Version: 1.0.0a5
 Summary: Universal Game Automation Framework
 Project-URL: Homepage, https://github.com/your-org/ugaf
 Project-URL: Repository, https://github.com/your-org/ugaf
@@ -25,6 +25,15 @@ Requires-Dist: pytest-cov>=5.0; extra == "dev"
 Requires-Dist: ruff>=0.5.0; extra == "dev"
 Requires-Dist: black>=24.0; extra == "dev"
 Requires-Dist: mypy>=1.10; extra == "dev"
+Provides-Extra: input
+Requires-Dist: pyautogui>=0.9; extra == "input"
+Requires-Dist: keyboard>=0.13; extra == "input"
+Requires-Dist: mouse>=0.7; extra == "input"
+Provides-Extra: imaging
+Requires-Dist: opencv-python>=4.9.0; extra == "imaging"
+Requires-Dist: numpy>=1.26; extra == "imaging"
+Provides-Extra: vision
+Requires-Dist: ugaf[imaging]; extra == "vision"
 
 # Universal Game Automation Framework (UGAF)
 

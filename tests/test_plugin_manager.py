@@ -219,6 +219,40 @@ class TestPluginManager:
         assert manager._lifecycles["simple"].state.value == "error"
 
 
+class TestScreenshotIntegration:
+    """A plugin resolves ScreenshotManager/VisionManager with real screen capture."""
+
+    async def test_vision_screenshot_works_when_provider_configured(
+        self, event_bus: EventBus
+    ) -> None:
+        from ugaf.core.config import Config
+        from ugaf.vision.manager import VisionManager
+
+        cfg = Config()
+        cfg._data = {"vision": {"screenshot_provider": "mock"}}
+        manager = PluginManager(
+            config=cfg,
+            event_bus=event_bus,
+            games_dir=Path("nonexistent"),
+        )
+
+        context = manager._get_or_create_context()
+        vision = context.service_container.resolve(VisionManager)
+        frame = vision.screenshot()
+        assert frame.size.width == 1080
+
+    async def test_vision_screenshot_raises_when_no_provider_configured(
+        self, manager: PluginManager
+    ) -> None:
+        from ugaf.vision.exceptions import ScreenshotError
+        from ugaf.vision.manager import VisionManager
+
+        context = manager._get_or_create_context()
+        vision = context.service_container.resolve(VisionManager)
+        with pytest.raises(ScreenshotError):
+            vision.screenshot()
+
+
 class TestDeviceManagerIntegration:
     """A plugin resolves DeviceManager from its GameContext to build per-device input."""
 

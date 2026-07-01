@@ -8,3 +8,15 @@ pytest-cov>=5.0
 ruff>=0.5.0
 black>=24.0
 mypy>=1.10
+
+[imaging]
+opencv-python>=4.9.0
+numpy>=1.26
+
+[input]
+pyautogui>=0.9
+keyboard>=0.13
+mouse>=0.7
+
+[vision]
+ugaf[imaging]

@@ -484,3 +484,54 @@ single caller.
   `ugaf.device` for the ADB provider specifically. Verified no circular import results
   (`ugaf.device` does not depend on `ugaf.input`); Windows-only usage of `ugaf.input`
   is unaffected since `WindowsInputProvider` doesn't touch this code path.
+
+---
+
+## ADR-013: `ScreenshotManager` subclasses `ScreenshotProvider`
+
+- **Status**: Accepted
+- **Date**: 2026-07-01
+
+### Context
+
+`ugaf.vision.screenshot.ScreenshotProvider` (Milestone 2) is the interface
+`VisionManager` depends on. Milestone (Screenshot Capture) needed to add provider
+selection, retry, and frame caching on top of whichever concrete provider is chosen —
+the same role `InputManager` plays for `InputProvider` and `DeviceManager` plays for
+`DeviceProvider`. Unlike those two, `VisionManager`'s constructor already had a
+stable, tested `screenshot_provider: ScreenshotProvider | None` parameter predating
+this milestone, and changing its type would be a breaking API change for no
+architectural gain.
+
+### Decision
+
+`ScreenshotManager` subclasses `ScreenshotProvider` directly rather than being an
+unrelated orchestrator class. Its `capture_full`/`capture_region`/
+`capture_game_window` methods satisfy the ABC (with `capture_full` widening the
+signature with optional `use_cache`/`max_age` keyword arguments — an LSP-compatible
+override, verified by `mypy --strict`). This means a `ScreenshotManager` instance can
+be passed anywhere a plain `ScreenshotProvider` is expected — in particular,
+`VisionManager(screenshot_provider=screenshot_manager)` — with zero changes to
+`VisionManager` itself, while transparently adding retry and caching to whichever
+concrete provider (`AdbScreenshotProvider`, `MockScreenshotProvider`,
+`ImageReplayProvider`, or a future one) it wraps.
+
+### Consequences
+
+- Positive: `VisionManager`'s public API is completely unchanged — verified by the
+  existing `test_vision_manager.py` suite passing unmodified.
+- Positive: `PluginManager._register_vision_services` constructs and connects a
+  `ScreenshotManager` and passes it straight into `VisionManager`'s existing
+  `screenshot_provider` parameter — confirmed live end-to-end:
+  `VisionManager.screenshot()` now actually returns real image data through the full
+  DI chain, closing the exact gap the original repository audit flagged ("the vision
+  engine cannot actually see the screen").
+- Positive: `ScreenshotManager` is independently resolvable from `GameContext`
+  (registered as its own DI singleton) for plugins that want direct access to
+  `capture_full_async`/cache control beyond what `VisionManager`'s simpler
+  `screenshot()`/`screenshot_region()`/`screenshot_window()` wrappers expose.
+- Negative: `ScreenshotManager`'s `capture_full` signature (`use_cache`, `max_age`)
+  differs from the plain interface's bare `capture_full()` — a caller holding a
+  `ScreenshotProvider`-typed reference can't discover these extra parameters without
+  knowing the concrete type is a `ScreenshotManager`. Acceptable: the extra parameters
+  are opt-in (default `use_cache=False` preserves plain-provider semantics exactly).

@@ -23,6 +23,10 @@ imaging:
 
 vision:
   screenshot_provider: null
+  screenshot:
+    retry:
+      count: 2
+      delay: 0.2
   template_match_method: ccorr_normed
   template_confidence: 0.9
   pixel_threshold: 30.0

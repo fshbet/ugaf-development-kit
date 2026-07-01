@@ -79,6 +79,25 @@ the framework's only plugin system — the previously-coexisting legacy loader
   in `DeviceInfo.extra` — there is no structured `DeviceCapabilities` taxonomy yet
   (deferred to Milestone 6, Capability-Based Architecture).
 
+## Screenshot Capture
+
+- **Only one-shot capture exists** (`AdbScreenshotProvider`, via `adb exec-out
+  screencap -p`). No streaming/continuous-capture provider yet — a real-time vision
+  loop calling `capture_full()` repeatedly re-runs a full ADB round-trip each time
+  (mitigated somewhat by `ScreenshotManager`'s optional frame cache, but that avoids
+  redundant *identical* captures within a window, not the underlying per-call cost).
+  `ScrcpyScreenshotProvider` is the documented next step — see
+  `SCREENSHOT_CAPTURE_STRATEGY.md`.
+- **`capture_region()` always captures the full screen and crops locally** — there is
+  no server-side partial-capture optimization with ADB. Only a streaming provider can
+  meaningfully improve this.
+- **`AdbScreenshotProvider.capture_game_window()` always raises** — Android has no
+  window-title concept; this method only exists to satisfy the shared
+  `ScreenshotProvider` interface used by other platforms.
+- **No Windows/Linux/macOS `ScreenshotProvider` implementations** — only Android (via
+  ADB) and the `mock`/`replay` providers exist. A desktop screenshot provider (e.g.
+  backed by `mss` or a native capture API) has not been implemented.
+
 ## Event Bus
 
 - **No subscriber timeout**. A slow or hanging handler blocks all
