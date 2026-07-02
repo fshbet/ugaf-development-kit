@@ -27,7 +27,7 @@ jobs:
       - name: Install package with dev extras
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,input,imaging,vision]"
+          pip install -e ".[dev,input,imaging,vision,webapp]"
 
       - name: Ruff check
         run: ruff check .

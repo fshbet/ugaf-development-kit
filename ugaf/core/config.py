@@ -118,6 +118,30 @@ class Config:
         if config_path is not None:
             self.load(Path(config_path))
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Config:
+        """Build a Config directly from an in-memory dict, without a YAML file.
+
+        Useful for a caller that needs a small, local config override
+        independent of the shared application config (e.g. forcing a
+        specific input provider for one connection) without writing a
+        temporary file.
+
+        Args:
+            data: Configuration values, in the same nested-dict shape
+                a loaded YAML file would produce.
+
+        Returns:
+            A new ``Config`` with *data* as its contents (still subject
+            to environment variable overrides, exactly like a loaded
+            file).
+
+        """
+        config = cls()
+        config._data = _deep_merge(config._data, data)
+        _merge_env_overrides(config._data)
+        return config
+
     def load(self, config_path: Path) -> None:
         """Load configuration from a YAML file.
 

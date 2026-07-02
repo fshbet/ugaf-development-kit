@@ -2,6 +2,158 @@
 
 ## Unreleased
 
+### Data-driven automation architecture: Knowledge -> Strategy -> Executor
+
+#### Added
+
+- **`ugaf.automation`**: a new, reusable, game-agnostic automation stack, extracted
+  from `games/shadow_fight_3`'s original hardcoded logic:
+  - `ugaf.automation.knowledge.KnowledgeBase` loads a game's `knowledge/moves.yaml`
+    (named moves — ordered generic action steps + metadata: cooldown, damage,
+    shadow_cost, range, startup, recovery, priority, tags) and `knowledge/buttons.yaml`
+    (named controls — screen positions as resolution-independent fractions).
+  - `ugaf.automation.strategy.StrategyEngine` evaluates a `strategies/<name>.yaml`
+    file's ordered `when -> do` rules each cycle to pick which moves run.
+  - `ugaf.automation.executor.Executor` turns a move's step sequence into real
+    `InputManager` calls (`tap`, `move`, `hold`, `wait`) — no game-specific knowledge.
+  - See ADR-014 in `ARCHITECTURE_DECISIONS.md` for the full rationale.
+- **`VisionManager.measure_bar_fill`/`wait_until_visible`/`wait_until_hidden`**: three
+  new reusable vision primitives (any left-to-right bar gauge; polling for a template
+  to appear/disappear) — game-agnostic infrastructure for the vision-driven strategy
+  conditions this architecture is designed to support next.
+- **`games/shadow_fight_3` restructured** into the new architecture:
+  `knowledge/moves.yaml`, `knowledge/buttons.yaml`, `strategies/{balanced,aggressive,
+  defensive}.yaml`, plus a `README.md` documenting how to add a move or strategy
+  without touching Python. `plugin.py` shrank to a thin shell (connect, load
+  knowledge/strategy, drive the executor loop, report status) — no move names,
+  coordinates, or combo sequences remain in Python.
+
+#### Fixed
+
+- **Real bug found via this refactor**: `PluginManager.initialize_all()`/`start_all()`
+  let one plugin's failure abort every other plugin's auto-start. Invisible until now
+  because earlier test runs happened to have a real device connected; with no device,
+  `shadow_fight_3` (which requires real ADB) failing during `Application.start()`'s
+  default auto-start was aborting `demo_workflow` and `example_game` too, even though
+  neither needs hardware. Fixed by making both methods fault-isolated per plugin (log
+  a warning and continue, rather than propagate).
+
+#### Validation
+
+Full test suite (653 tests), ruff, and mypy pass with **no real device connected** —
+closing the gap the fix above addresses. Re-validated live on the same physical
+Xiaomi/HyperOS device afterward: the refactored plugin reproduced the exact same
+cycle-by-cycle move rotation (shuriken at cycle 4/8/16, shadow ability at cycle 6/12,
+alternating jab/heavy combo otherwise) as the pre-refactor hardcoded version, now
+driven entirely by `strategies/balanced.yaml`, with real ADB taps confirmed via server
+logs and a clean start/pause/resume/stop cycle through the web UI.
+
+### First-run fixes + Shadow Fight 3 plugin (found via real-hardware use)
+
+#### Fixed
+
+- **Plugin "Run" button returned `400 Cannot transition from 'running' to 'initialized'`.**
+  `Application.start()` unconditionally auto-initialized and started every discovered
+  plugin at boot — correct for the CLI's `ugaf start` (a headless runner), but it meant
+  every plugin was already `RUNNING` by the time the web UI's "Run" button called
+  `initialize()` again. Fixed with a new `auto_start_plugins` parameter (default `True`,
+  set to `False` by `AppSession.start()`), plus idempotent `AppSession.run_plugin()`/
+  `stop_plugin()` that check the plugin's current `GameState` and pick the correct
+  transition (or no-op if already running/stopped) instead of assuming a fresh plugin.
+- **Live screen did not refresh after tap/swipe/text actions.** `app.js` only
+  re-captured the screen after an action if the "Auto-refresh" checkbox was checked,
+  and the checkbox defaulted unchecked. The checkbox now defaults checked, and action
+  feedback (tap/swipe/text) always triggers an immediate re-capture regardless of the
+  checkbox — the checkbox now only gates the passive 3s polling interval.
+
+#### Added
+
+- **`games/shadow_fight_3`**: an automated combat plugin for Shadow Fight 3, built from
+  a user-supplied screenshot of the game's HUD (bottom-left 8-directional joystick;
+  bottom-right 4-button cluster — shuriken above, shadow ability left, punch right,
+  kick below). Control positions are stored as fractions of screen size in
+  `config.yaml`, resolved to real pixels from the connected device's detected
+  resolution, so the same config works across devices. Runs a background
+  `asyncio.Task` combat loop (advance, rotate punch/kick combos, periodic shuriken and
+  shadow-ability triggers) started in `start()` and cancelled in `stop()` — the first
+  UGAF plugin to run as a genuine continuous background loop rather than a one-shot
+  workflow. Validated live against the same physical Xiaomi/HyperOS device: real ADB
+  taps executed for 14+ combat cycles, screen size auto-detected (1220×2712), and
+  clean start/stop/double-run idempotency confirmed through the actual web UI.
+
+### Web control panel + real-device validation
+
+#### Added
+
+- **`ugaf.webapp`**: a FastAPI backend (`server.py`, `session.py`) plus a static HTML/
+  JS/CSS frontend (`static/`) — a browser-based control panel to detect devices, view
+  the live screen, click to tap, drag to swipe, send text, run plugins, and view logs,
+  with no code or ADB commands. Launch via `python -m ugaf.webapp`.
+- **`Config.from_dict()`**: a new small, justified public API on `ugaf.core.config.Config`
+  for building a config from an in-memory dict without a temp YAML file — needed by
+  two independent call sites (the web session forcing `provider: adb` for device
+  connections, replacing an earlier private-attribute workaround).
+- 16 new FastAPI `TestClient` tests (`tests/test_webapp_server.py`), CI-safe (all ADB
+  subprocess calls mocked — no real `adb` binary or device required).
+
+#### Fixed (found via real-hardware testing)
+
+- **`AppSession.list_plugins()`** used `PluginManager.discover()`, which only returns
+  newly-found plugins — since plugins are already discovered once at
+  `Application.start()`, the web UI's plugin panel was always empty. Fixed to read
+  `PluginManager.registry.list()`.
+- **Device connections from the web UI reused the shared framework config's
+  `input.provider: windows` default** instead of forcing `adb`, so every real-device
+  connect attempt failed. Fixed via `Config.from_dict({"input": {"provider": "adb"}})`.
+- **`AdbInputProvider._adb_shell()` silently swallowed all failures**, including a
+  real `SecurityException` from a test device's OS blocking ADB input injection
+  entirely — the failure was completely invisible until raw `adb` was tested outside
+  the framework. Now logged at warning level (still doesn't raise, since tap/swipe are
+  fire-and-forget by design).
+
+#### Real hardware validation
+
+A physical Android device (Xiaomi/HyperOS, `peridot`) was connected via ADB.
+Confirmed live: device detection, connection, and screenshot capture (visually
+verified — a real captured screenshot of the device's home screen and Calculator
+app). Tap was validated end-to-end through the actual web application: computed
+button coordinates from a live screenshot, executed `2 + 2 = 4` on the device's real
+Calculator via tap, and confirmed the result with a second real screenshot. Swipe was
+confirmed to execute without error on real hardware (same underlying ADB path as
+tap) but wasn't visually confirmed against a swipe-reactive UI element in this pass.
+Uncovered a device-specific OS restriction (see README.md) requiring a Developer
+Options change to permit ADB input injection at all — not a UGAF defect, but now
+documented and (for the swallowed-failure case) surfaced in logs instead of silent.
+
+### Version 0.1 reached: capture → find → tap → swipe → type, end to end
+
+#### Added
+
+- **`games/demo_workflow`**: a plugin demonstrating the full Version 0.1 workflow
+  (capture the screen, find a template image, tap it, swipe, enter text) end to end,
+  driven through the real `Application`/`PluginManager` discovery path. Runs against
+  bundled demo assets (a rendered "screen" image + button template) with
+  `ImageReplayProvider`/`MockInputProvider` — no real device required; switching
+  `games/demo_workflow/config.yaml` to `adb` drives a real connected device instead,
+  with no code changes.
+- **`ugaf.input.mock.MockInputProvider`**: logs actions instead of performing them
+  (the input-side counterpart to `MockScreenshotProvider`), registered as `"mock"`.
+- **Template-matching reliability tests** (`tests/test_vision_matcher_reliability.py`):
+  validates `TemplateMatcher` against realistic rendered images (gradients, noise,
+  drawn UI elements) rather than the zero-filled arrays the original audit flagged —
+  exact localization, noise tolerance, correct rejection of dissimilar templates, and
+  multi-element discrimination.
+- **`prompts/MASTER_PROMPT.md`**: single current entry point for future development
+  sessions, consolidating the philosophy/architecture guidance that had accumulated
+  across many directive messages. Historical per-sprint prompts are preserved as-is.
+- 20 new tests (mock input provider, matcher reliability, demo plugin end-to-end).
+
+#### Changed
+
+- `README.md` and `ROADMAP.md` rewritten to reflect current reality (were stale
+  one-line/phase-list stubs) — `ROADMAP.md` now tracks the Version 0.1 capability
+  checklist directly; `PROJECT_STATUS.md` leads with the same checklist.
+
 ### Screenshot Capture subsystem (closes: "vision engine cannot see the screen")
 
 #### Added

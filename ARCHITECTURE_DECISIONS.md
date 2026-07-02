@@ -535,3 +535,83 @@ concrete provider (`AdbScreenshotProvider`, `MockScreenshotProvider`,
   `ScreenshotProvider`-typed reference can't discover these extra parameters without
   knowing the concrete type is a `ScreenshotManager`. Acceptable: the extra parameters
   are opt-in (default `use_cache=False` preserves plain-provider semantics exactly).
+
+---
+
+## ADR-014: Knowledge/Strategy/Executor split for game automation logic
+
+- **Status**: Accepted
+- **Date**: 2026-07-02
+
+### Context
+
+The first `games/shadow_fight_3` plugin (Version 0.1) hardcoded every piece of
+game-specific behaviour directly in Python: button/joystick pixel fractions, named
+combo sequences (`_COMBOS` dict), and the cycle-rotation combat logic all lived inside
+`plugin.py`. This worked, but meant recalibrating a button position, adding a move, or
+changing the combat pattern all required editing and redeploying Python — and none of
+it was reusable by a second game plugin, which would have had to re-implement the same
+joystick-direction math and combo-execution loop from scratch.
+
+### Decision
+
+Split game automation into three reusable, game-agnostic layers under
+`ugaf.automation`, with all game-specific content moved to data:
+
+- **Knowledge** (`ugaf.automation.knowledge`): `KnowledgeBase` loads a game's
+  `knowledge/moves.yaml` (named moves: ordered generic action steps + metadata —
+  cooldown, damage, shadow_cost, range, startup, recovery, priority, tags) and
+  `knowledge/buttons.yaml` (named controls: screen positions as fractions of
+  width/height, resolved to real pixels from the connected device's detected
+  resolution). `MoveDefinition` and `ControlLayout` are the typed result.
+- **Strategy** (`ugaf.automation.strategy`): `StrategyEngine` evaluates a
+  `strategies/<name>.yaml` file's ordered `when -> do` rules against a per-cycle state
+  dict, returning which move names to run this cycle. The condition vocabulary today
+  is deliberately small (`"always"`, `{cycle_mod: N}`) — enough to reproduce the
+  original hardcoded rotation exactly as data — and is meant to grow (e.g.
+  vision-derived facts like enemy distance or health percentage) without changing any
+  other layer.
+- **Executor** (`ugaf.automation.executor`): `Executor` turns a move's step sequence
+  into real `InputManager` calls. It understands exactly four generic verbs (`tap`,
+  `move`, `hold`, `wait`) and has zero knowledge of any specific game — the same
+  `Executor` class serves every plugin that adopts this architecture.
+
+A plugin (e.g. `ShadowFight3Game`) becomes a thin shell: load knowledge/strategy in
+`__init__`/`start()`, drive the executor loop, report status. See
+`games/shadow_fight_3/README.md` for the full file layout and how to edit behaviour
+without touching Python.
+
+Introduced incrementally: `games/demo_workflow` and `games/example_game` are
+untouched and still work exactly as before — nothing about `ugaf.sdk.game.GamePlugin`,
+`ugaf.plugins.manager.PluginManager`, or any other existing plugin's structure changed.
+A plugin adopts `ugaf.automation` by choice, not by framework requirement.
+
+### Consequences
+
+- Positive: `games/shadow_fight_3/plugin.py` shrank from ~230 lines (with all move/
+  coordinate/combo logic inline) to ~185 lines containing zero move names,
+  coordinates, or combo sequences — every one of those now lives in YAML and is
+  editable without a code change or redeploy.
+- Positive: `ugaf.automation.knowledge`/`strategy`/`executor` are immediately reusable
+  by any future game or app-automation plugin; none contain a single Shadow-Fight-3-
+  specific reference.
+- Positive: validated live on real hardware after the refactor — the exact same
+  cycle-by-cycle move rotation (shuriken at cycle 4/8/16, shadow ability at cycle 6/12,
+  alternating jab/heavy combo otherwise) reproduced identically to the pre-refactor
+  version, now driven entirely by `strategies/balanced.yaml`.
+- Negative: an extra YAML-parsing/dataclass-construction indirection versus reading
+  values directly off a Python dict — judged acceptable; `KnowledgeBase.load()` and
+  `Strategy.load()` are each under 40 lines and covered by dedicated unit tests
+  (`tests/test_automation_knowledge.py`, `tests/test_automation_strategy.py`).
+- Negative: the `StrategyEngine` condition vocabulary (`always`, `cycle_mod`) cannot
+  yet express vision-derived conditions ("if enemy is close") from the original
+  directive's example — no calibrated template/health-bar data exists for this game
+  yet (see `games/shadow_fight_3/knowledge/templates/README.md`). `VisionManager`
+  gained `measure_bar_fill`/`wait_until_visible`/`wait_until_hidden` in the same pass
+  specifically so this is a small follow-up, not a redesign, once real captures exist.
+- Negative (found and fixed in the same pass): this refactor exposed a pre-existing
+  bug in `PluginManager.initialize_all()`/`start_all()` — one plugin's failure (e.g. a
+  hardware-dependent plugin when no device is connected) aborted every other plugin's
+  auto-start, including `demo_workflow`, which needs no hardware at all. Fixed by
+  making both methods fault-isolated per plugin (catch, log a warning, continue) —
+  see `CHANGELOG.md`.

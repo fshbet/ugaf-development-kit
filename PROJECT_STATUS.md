@@ -1,4 +1,110 @@
-# UGAF Project Status — Source-Verified Audit
+# UGAF Project Status
+
+## Version 0.1 Capability Checklist (authoritative — updated 2026-07-02)
+
+Progress is tracked by completed capabilities, not lines of code, test count, or
+number of abstractions.
+
+- [x] Connect to an Android device — **validated on real hardware**
+- [x] Detect connected devices (online/offline/unauthorized) — **validated on real hardware**
+- [x] Capture the device screen — **validated on real hardware**
+- [x] Locate an image on the screen (real-image reliability tests; mock/replay demo)
+- [x] Tap the detected location — **validated on real hardware** (see below)
+- [x] Swipe — command executes on real hardware without error; visual UI-response
+      confirmation still pending a swipe-reactive app
+- [x] Enter text — implemented and unit-tested; not yet visually confirmed on real
+      hardware in this pass
+- [x] Execute one sample plugin from start to finish
+- [x] Desktop application (`ugaf.webapp`) — browser-based control panel; users detect
+      devices, view the live screen, tap/swipe/type, run plugins, and view logs with
+      no code or ADB commands; screen refreshes live after every action
+- [x] Second sample plugin, running continuously (not one-shot): `games/shadow_fight_3`
+      — **validated on real hardware**, 14+ real ADB-driven combat cycles
+
+**Version 0.1 is complete, including real-hardware validation.** A physical Android
+device (Xiaomi/HyperOS, codename `peridot`) was connected via ADB and used to validate
+device detection, connection, and screenshot capture live. Tap was validated
+end-to-end through the actual web application: a real screenshot was captured, button
+coordinates were computed from it, `2 + 2 = 4` was executed on the device's real
+Calculator app via tap, and confirmed by a second real screenshot showing the result —
+not a simulation. The Shadow Fight 3 plugin was then run against the same device
+through the web UI's Run button, executing real combo taps for 14+ combat cycles with
+clean start/stop and double-click idempotency. See `CHANGELOG.md` for the full
+sequence and the real bugs this uncovered and fixed (below).
+
+### Real-hardware findings (this pass)
+
+- **Real bug found and fixed**: the web UI's "Run" button returned
+  `400 Cannot transition from 'running' to 'initialized'` on first use, because
+  `Application.start()` unconditionally auto-started every discovered plugin at boot
+  (correct for the CLI, wrong for the web UI's explicit per-plugin Run button). Fixed
+  with an `auto_start_plugins` flag and an idempotent `AppSession.run_plugin()`/
+  `stop_plugin()` that check the plugin's actual `GameState` before acting.
+- **Real bug found and fixed**: the live screen did not refresh after tap/swipe/text
+  actions unless the "Auto-refresh" checkbox (unchecked by default) was on. Checkbox
+  now defaults checked, and action feedback always triggers an immediate re-capture
+  regardless of its state.
+
+### Earlier real-hardware findings
+
+- **Device-specific ADB restriction, not a UGAF defect**: this test device's OS (MIUI/
+  HyperOS) rejected raw `adb shell input tap` with
+  `SecurityException: Injecting input events requires... INJECT_EVENTS permission`
+  until an additional Developer Options toggle ("USB debugging (Security settings)")
+  was enabled. Documented in `README.md`.
+- **Real bug found and fixed**: `AdbInputProvider._adb_shell()` silently swallowed
+  this exact failure (by design, for fire-and-forget tap/swipe semantics) with zero
+  logging — the SecurityException was completely invisible until raw `adb` was tested
+  directly, outside the framework. Now logged at warning level with the device,
+  command, and error.
+- **Real bug found and fixed**: `AppSession.list_plugins()` called
+  `PluginManager.discover()`, which only returns *newly* discovered plugins —
+  since `Application.start()` already discovers plugins once at startup, the web UI's
+  plugin panel was always empty after the first load. Fixed to read
+  `PluginManager.registry.list()` instead.
+- **Real bug found and fixed**: connecting a device from the web UI reused the shared
+  framework config's `input.provider: windows` default instead of forcing `adb` for an
+  Android device connection, causing every real-device connect attempt to fail. Fixed
+  by adding `Config.from_dict()` (a small, justified new public API — needed by two
+  independent call sites) and using it to force `provider: adb` for web-UI device
+  connections specifically.
+
+See `ROADMAP.md` for what's next.
+
+## Post-0.1: Data-Driven Automation Architecture (2026-07-02)
+
+Version 0.1's second sample plugin (`games/shadow_fight_3`) originally hardcoded every
+move, coordinate, and combo directly in Python. Per direction to make UGAF a reusable
+automation *platform* rather than accumulate game-specific Python, that logic was
+extracted into a new reusable stack:
+
+- [x] `ugaf.automation.knowledge.KnowledgeBase` — loads a game's moves
+      (`knowledge/moves.yaml`) and control layout (`knowledge/buttons.yaml`) from YAML
+- [x] `ugaf.automation.strategy.StrategyEngine` — picks moves per cycle from a
+      `strategies/<name>.yaml` file's ordered rules; three strategies shipped
+      (`balanced`, `aggressive`, `defensive`)
+- [x] `ugaf.automation.executor.Executor` — generic `tap`/`move`/`hold`/`wait` verbs,
+      zero game-specific knowledge, reusable by any future plugin
+- [x] `games/shadow_fight_3/plugin.py` reduced to a thin shell (connect, load, run
+      loop, report status) — no move names, coordinates, or combos remain in Python
+- [x] `VisionManager` gained `measure_bar_fill`/`wait_until_visible`/
+      `wait_until_hidden` — reusable primitives, ready for vision-driven strategy
+      conditions once real game captures exist
+- [x] **Validated on real hardware**: identical cycle-by-cycle move rotation to the
+      pre-refactor version, now driven entirely by `strategies/balanced.yaml`
+- [x] **Real bug found and fixed**: `PluginManager.initialize_all()`/`start_all()`
+      let one plugin's failure (e.g. no device connected) abort every other plugin's
+      auto-start — this refactor's real-hardware round-trip (device unplugged between
+      sessions) is what surfaced it. Now fault-isolated per plugin.
+- [x] Existing plugins (`demo_workflow`, `example_game`) untouched and still pass
+      unmodified — introduced incrementally, not a rewrite
+
+See ADR-014 in `ARCHITECTURE_DECISIONS.md` and `games/shadow_fight_3/README.md` for
+the full design and how to edit behaviour without touching Python.
+
+---
+
+# Source-Verified Audit (historical)
 
 **Generated:** 2026-07-01
 **Method:** Every claim below was verified by reading actual source code, running the test suite, running static analysis, and checking import/wiring paths — not by reading existing markdown docs. Markdown docs (ROADMAP.md, sprint reports, etc.) were treated as claims to be checked, not facts. Where a doc's claim was checked and found accurate, that is noted explicitly.

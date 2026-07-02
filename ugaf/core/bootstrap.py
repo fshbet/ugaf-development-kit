@@ -121,10 +121,20 @@ class Application:
 
         logger.info("app.initialized", config_path=str(self._config_path))
 
-    async def start(self) -> None:
+    async def start(self, auto_start_plugins: bool = True) -> None:
         """Start the application.
 
         Discovers plugins, starts them, and publishes ``app.started``.
+
+        Args:
+            auto_start_plugins: If ``True`` (the default, matching the
+                CLI's ``ugaf start`` — a headless automation runner),
+                every discovered plugin is immediately initialized and
+                started. If ``False`` (used by the web control panel,
+                where the user starts plugins explicitly from the UI),
+                plugins are only discovered/registered here; a caller
+                must call ``plugin_manager.initialize()``/``start()``
+                per plugin itself.
 
         Raises:
             RuntimeError: If not initialized.
@@ -144,8 +154,9 @@ class Application:
 
         if self.plugin_manager is not None:
             self.plugin_manager.discover()
-            await self.plugin_manager.initialize_all()
-            await self.plugin_manager.start_all()
+            if auto_start_plugins:
+                await self.plugin_manager.initialize_all()
+                await self.plugin_manager.start_all()
 
         if self.device_manager is not None:
             self.device_manager.discover()

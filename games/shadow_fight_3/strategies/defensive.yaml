@@ -1,0 +1,11 @@
+# Favors spacing and ranged pressure: slower cycle, retreats and
+# blocks between light combos, shuriken instead of shadow ability.
+name: defensive
+cycle_interval: 1.5
+rules:
+  - when: { cycle_mod: 5 }
+    do: shuriken_throw
+  - when: { cycle_mod: 3 }
+    do: [block]
+  - when: always
+    do: [retreat, jab_combo]

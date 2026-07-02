@@ -9,6 +9,7 @@ from ugaf.input.exceptions import (
     ProviderNotAvailableError,
 )
 from ugaf.input.manager import InputManager
+from ugaf.input.mock import MockInputProvider
 from ugaf.input.provider import InputProvider
 from ugaf.input.registry import InputProviderRegistry, registry
 from ugaf.input.types import Button, Key, Point
@@ -17,6 +18,7 @@ from ugaf.input.windows import WindowsInputProvider
 # Register built-in providers during application bootstrap.
 registry.register("windows", WindowsInputProvider)
 registry.register("adb", AdbInputProvider)
+registry.register("mock", MockInputProvider)
 
 __all__ = [
     "AdbInputProvider",
@@ -29,6 +31,7 @@ __all__ = [
     "InputProvider",
     "InputProviderRegistry",
     "Key",
+    "MockInputProvider",
     "Point",
     "ProviderNotAvailableError",
     "WindowsInputProvider",

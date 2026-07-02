@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <title>UGAF Control Panel</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>UGAF Control Panel</h1>
+    <button id="theme-toggle">Dark mode</button>
+  </header>
+
+  <main>
+    <section class="panel" id="left-panel">
+      <h2>Devices</h2>
+      <button id="refresh-devices">Refresh</button>
+      <ul id="device-list"></ul>
+
+      <h2>Plugins</h2>
+      <ul id="plugin-list"></ul>
+    </section>
+
+    <section class="panel" id="center-panel">
+      <div id="screen-wrap">
+        <img id="screen-img" alt="Device screen" />
+      </div>
+      <div id="coord-readout">No device connected</div>
+      <div id="zoom-controls">
+        <button id="zoom-out">-</button>
+        <span id="zoom-level">100%</span>
+        <button id="zoom-in">+</button>
+      </div>
+    </section>
+
+    <section class="panel" id="right-panel">
+      <h2>Device Info</h2>
+      <dl id="device-info">
+        <dt>Status</dt><dd>No device selected</dd>
+      </dl>
+
+      <h2>Current Action</h2>
+      <div id="current-action">Idle</div>
+
+      <h2>Log</h2>
+      <div id="log-panel"></div>
+    </section>
+  </main>
+
+  <div class="toolbar">
+    <button id="btn-screenshot" class="primary">Capture Screen</button>
+    <button id="btn-connect" class="primary">Connect</button>
+    <button id="btn-disconnect" class="danger">Disconnect</button>
+    <input type="text" id="text-input" placeholder="Text to type on device…" />
+    <button id="btn-send-text">Send Text</button>
+    <label><input type="checkbox" id="auto-refresh" checked /> Auto-refresh screen</label>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

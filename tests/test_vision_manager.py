@@ -143,6 +143,73 @@ class TestVisionManagerOCR:
             vm.ocr_text(MagicMock(spec=Image))
 
 
+class TestVisionManagerBarFill:
+    def test_measure_bar_fill_full(self, mock_imaging: ImagingManager) -> None:
+        vm = VisionManager(imaging=mock_imaging)
+        backend = MagicMock(spec=ImageBackend)
+        data = np.zeros((20, 100, 3), dtype=np.uint8)
+        region = Region(10, 5, 50, 10)
+        row_y = region.y + region.height // 2
+        data[row_y, region.x : region.x + region.width] = [0, 255, 0]  # BGR -> Color(0, 255, 0)
+        img = Image(data, backend)
+        fraction = vm.measure_bar_fill(img, region, Color(0, 255, 0))
+        assert fraction == pytest.approx(1.0)
+
+    def test_measure_bar_fill_half(self, mock_imaging: ImagingManager) -> None:
+        vm = VisionManager(imaging=mock_imaging)
+        backend = MagicMock(spec=ImageBackend)
+        data = np.zeros((20, 100, 3), dtype=np.uint8)
+        region = Region(10, 5, 50, 10)
+        row_y = region.y + region.height // 2
+        data[row_y, region.x : region.x + 25] = [0, 255, 0]
+        img = Image(data, backend)
+        fraction = vm.measure_bar_fill(img, region, Color(0, 255, 0))
+        assert fraction == pytest.approx(0.5)
+
+    def test_measure_bar_fill_empty(self, mock_imaging: ImagingManager) -> None:
+        vm = VisionManager(imaging=mock_imaging)
+        backend = MagicMock(spec=ImageBackend)
+        data = np.zeros((20, 100, 3), dtype=np.uint8)
+        region = Region(10, 5, 50, 10)
+        img = Image(data, backend)
+        fraction = vm.measure_bar_fill(img, region, Color(0, 255, 0))
+        assert fraction == pytest.approx(0.0)
+
+
+class TestVisionManagerWaitUntil:
+    def test_wait_until_visible_returns_immediately_when_found(
+        self, mock_imaging: ImagingManager, mock_screenshot_provider: MagicMock
+    ) -> None:
+        vm = VisionManager(imaging=mock_imaging, screenshot_provider=mock_screenshot_provider)
+        sentinel_match = MagicMock()
+        with patch.object(vm, "find_template", return_value=sentinel_match) as mocked:
+            result = vm.wait_until_visible("template.png", timeout=1.0, poll_interval=0.01)
+        assert result is sentinel_match
+        mocked.assert_called_once()
+
+    def test_wait_until_visible_times_out(
+        self, mock_imaging: ImagingManager, mock_screenshot_provider: MagicMock
+    ) -> None:
+        vm = VisionManager(imaging=mock_imaging, screenshot_provider=mock_screenshot_provider)
+        with patch.object(vm, "find_template", return_value=None):
+            result = vm.wait_until_visible("template.png", timeout=0.05, poll_interval=0.01)
+        assert result is None
+
+    def test_wait_until_hidden_returns_true_when_absent(
+        self, mock_imaging: ImagingManager, mock_screenshot_provider: MagicMock
+    ) -> None:
+        vm = VisionManager(imaging=mock_imaging, screenshot_provider=mock_screenshot_provider)
+        with patch.object(vm, "find_template", return_value=None):
+            assert vm.wait_until_hidden("template.png", timeout=1.0, poll_interval=0.01) is True
+
+    def test_wait_until_hidden_times_out_when_still_visible(
+        self, mock_imaging: ImagingManager, mock_screenshot_provider: MagicMock
+    ) -> None:
+        vm = VisionManager(imaging=mock_imaging, screenshot_provider=mock_screenshot_provider)
+        with patch.object(vm, "find_template", return_value=MagicMock()):
+            assert vm.wait_until_hidden("template.png", timeout=0.05, poll_interval=0.01) is False
+
+
 class TestVisionManagerDetect:
     def test_detect_contours(self, mock_imaging: ImagingManager) -> None:
         vm = VisionManager(imaging=mock_imaging)

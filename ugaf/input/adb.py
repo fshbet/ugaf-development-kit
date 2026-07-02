@@ -7,6 +7,7 @@ import subprocess
 import time
 from typing import Any
 
+from ugaf.core.logger import Logger, get_logger
 from ugaf.device.adb_provider import AdbDeviceProvider
 from ugaf.device.exceptions import DeviceCommandError, TransportUnavailableError
 from ugaf.input.exceptions import ConnectionFailedError, DeviceNotFoundError
@@ -157,6 +158,7 @@ class AdbInputProvider(InputProvider):
         self._connected = False
         self._screen_width: int = 0
         self._screen_height: int = 0
+        self._logger: Logger = get_logger()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -387,15 +389,26 @@ class AdbInputProvider(InputProvider):
     def _adb_shell(self, *args: str) -> None:
         """Run an ADB shell command on the current device.
 
-        Best-effort: failures are swallowed (matching prior behavior)
-        rather than raised, since input commands (tap/swipe/keyevent)
-        are fire-and-forget from the caller's perspective.
+        Best-effort: failures do not raise (input commands like
+        tap/swipe/keyevent are fire-and-forget from the caller's
+        perspective), but they are always logged at warning level —
+        a real device was found during development that silently
+        rejects ADB input injection entirely (some Android builds,
+        e.g. MIUI/HyperOS, require an additional "USB debugging
+        (Security settings)" developer option beyond plain USB
+        debugging); before this fix that failure was completely
+        invisible.
         """
         assert self._device_id is not None
         try:
             self._device_provider.shell(self._device_id, *args)
-        except (DeviceCommandError, TransportUnavailableError):
-            pass
+        except (DeviceCommandError, TransportUnavailableError) as exc:
+            self._logger.warning(
+                "input.adb_shell_failed",
+                device=self._device_id,
+                command=args,
+                error=str(exc),
+            )
 
     def _detect_screen_size(self) -> None:
         """Detect the device screen resolution via ``wm size``."""

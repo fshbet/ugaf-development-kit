@@ -1,0 +1,11 @@
+# Presses forward constantly: faster cycle, heavier attacks, more
+# frequent shadow ability, no retreating or blocking.
+name: aggressive
+cycle_interval: 0.9
+rules:
+  - when: { cycle_mod: 4 }
+    do: shadow_burst
+  - when: { cycle_mod: 3 }
+    do: shuriken_throw
+  - when: always
+    do: [advance, heavy_combo]

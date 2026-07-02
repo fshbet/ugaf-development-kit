@@ -137,6 +137,24 @@ async def test_stop_without_start(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_without_auto_start_plugins_only_discovers(tmp_path: Path) -> None:
+    """The web control panel needs plugins discovered but not auto-started."""
+    config_path = _write_config(
+        tmp_path / "config.yaml",
+        {"logging": {"level": "INFO"}},
+    )
+    app = Application(config_path=config_path, games_dir=Path("games"))
+    await app.initialize()
+    await app.start(auto_start_plugins=False)
+
+    assert app.plugin_manager is not None
+    assert len(app.plugin_manager.registry.list()) > 0  # discovered
+    assert app.plugin_manager.lifecycles == {}  # but nothing initialized/started
+
+    await app.stop()
+
+
+@pytest.mark.asyncio
 async def test_start_with_device_monitoring_enabled(tmp_path: Path) -> None:
     config_path = _write_config(
         tmp_path / "config.yaml",

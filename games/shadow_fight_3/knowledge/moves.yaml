@@ -1,0 +1,70 @@
+# Move library for Shadow Fight 3. Each move is an ordered sequence of
+# generic executor steps (tap/move/hold/wait — see
+# ugaf/automation/executor.py) plus descriptive metadata. Add a move
+# by adding an entry here; no Python change is needed for the plugin
+# to pick it up. Button/direction names referenced by "tap"/"move"
+# steps come from buttons.yaml in this same directory.
+moves:
+  advance:
+    sequence:
+      - move: right
+    tags: [movement]
+
+  retreat:
+    sequence:
+      - move: left
+    tags: [movement]
+
+  block:
+    sequence:
+      - move: down
+    tags: [defense]
+
+  jab_combo:
+    sequence:
+      - tap: punch
+      - tap: punch
+      - tap: kick
+    damage: 20
+    tags: [combo, melee]
+
+  heavy_combo:
+    sequence:
+      - tap: kick
+      - tap: punch
+      - tap: kick
+      - tap: punch
+    damage: 35
+    cooldown: 1.0
+    tags: [combo, melee, heavy]
+
+  upper_attack:
+    sequence:
+      - move: up
+      - tap: punch
+    damage: 15
+    tags: [combo, melee]
+
+  forward_throw:
+    sequence:
+      - move: right
+      - tap: punch
+    damage: 30
+    tags: [throw]
+
+  shuriken_throw:
+    sequence:
+      - tap: shuriken
+    cooldown: 3.0
+    range: ranged
+    startup: 0.2
+    tags: [ranged]
+
+  shadow_burst:
+    sequence:
+      - tap: shadow
+    shadow_cost: 100.0
+    cooldown: 5.0
+    recovery: 0.5
+    priority: 10
+    tags: [special]

@@ -1,0 +1,21 @@
+# Local override for this plugin's own InputManager/ScreenshotManager —
+# independent of the shared framework config. Requires a real connected
+# Android device (Shadow Fight 3 has no desktop/mock mode).
+#
+# Set `input.adb.default_device` to your device's serial (from `adb
+# devices`), or leave it unset and export UGAF_INPUT_ADB_DEFAULT_DEVICE
+# instead. If exactly one device is connected, AdbInputProvider/
+# AdbScreenshotProvider fall back to it automatically.
+input:
+  provider: adb
+  adb:
+    default_device: null
+
+# Which games/shadow_fight_3/strategies/<name>.yaml to run. Change this
+# (or override via UGAF_STRATEGY) to switch behaviour without touching
+# code — see strategies/README notes in ../README.md.
+strategy: balanced
+
+# Optional cap on combat cycles, mainly useful for tests/demos; null
+# runs until the plugin is stopped (e.g. via the web UI's Stop button).
+max_cycles: null

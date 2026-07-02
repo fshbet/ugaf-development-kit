@@ -247,17 +247,39 @@ class PluginManager:
     # ------------------------------------------------------------------
 
     async def initialize_all(self) -> None:
-        """Initialize all registered plugins."""
+        """Initialize all registered plugins.
+
+        One plugin's failure (e.g. a game plugin that requires
+        hardware not currently connected) does not prevent the others
+        from starting — each is initialized independently, with
+        failures logged rather than raised. Use
+        :meth:`~PluginManager.health` per plugin to check whether it
+        ended up in ``GameState.ERROR``.
+        """
         ctx = self._get_or_create_context()
         for meta in sorted(self._registry.list(), key=lambda m: m.id):
-            await self.initialize(meta.id, context=ctx)
+            try:
+                await self.initialize(meta.id, context=ctx)
+            except Exception as exc:
+                self._logger.warning(
+                    "plugin_manager.initialize_all_failed", plugin_id=meta.id, error=str(exc)
+                )
 
     async def start_all(self) -> None:
-        """Start all initialized plugins."""
+        """Start all initialized plugins.
+
+        Fault-isolated per plugin, mirroring :meth:`initialize_all` —
+        see its docstring for why.
+        """
         for plugin_id in self._sorted_lifecycle_ids():
             lifecycle = self._lifecycles[plugin_id]
             if lifecycle.state is GameState.INITIALIZED:
-                await lifecycle.start()
+                try:
+                    await lifecycle.start()
+                except Exception as exc:
+                    self._logger.warning(
+                        "plugin_manager.start_all_failed", plugin_id=plugin_id, error=str(exc)
+                    )
 
     async def pause_all(self) -> None:
         """Pause all running plugins."""

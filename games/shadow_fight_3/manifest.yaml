@@ -1,0 +1,17 @@
+name: Shadow Fight 3
+id: shadow_fight_3
+author: UGAF Team
+version: 2.0.0
+description: >-
+  Knowledge-driven combat plugin for Shadow Fight 3. Moves, button layout,
+  and combat strategy are data (knowledge/, strategies/), executed generically
+  by ugaf.automation — advance, throw shuriken at range, run punch/kick
+  combos up close, and use the shadow ability periodically.
+supported_platforms:
+  - android
+minimum_framework_version: 1.0.0
+capabilities:
+  - input
+  - vision
+  - screenshot
+priority: 100

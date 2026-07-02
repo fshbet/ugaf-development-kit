@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -297,6 +298,119 @@ class VisionManager(VisionProvider):
 
         """
         return scan_pixels(image, region=region)
+
+    # ------------------------------------------------------------------
+    # Waiting on templates
+    # ------------------------------------------------------------------
+
+    def wait_until_visible(
+        self,
+        template: Image | str | Path,
+        timeout: float = 5.0,
+        confidence: float = 0.9,
+        poll_interval: float = 0.3,
+    ) -> MatchResult | None:
+        """Poll the screen until *template* appears, or *timeout* elapses.
+
+        Reusable across any game/workflow that needs to wait for a UI
+        element (a button, a dialog, a loading screen finishing) — the
+        alternative to a caller hand-rolling its own capture/match/
+        sleep loop.
+
+        Args:
+            template: Template image (or path) to look for.
+            timeout: Maximum seconds to wait.
+            confidence: Minimum match confidence threshold.
+            poll_interval: Seconds between screenshot/match attempts.
+
+        Returns:
+            The first successful :class:`MatchResult`, or ``None`` if
+            *timeout* elapses without a match.
+
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            match = self.find_template(self.screenshot(), template, confidence=confidence)
+            if match is not None:
+                return match
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(poll_interval)
+
+    def wait_until_hidden(
+        self,
+        template: Image | str | Path,
+        timeout: float = 5.0,
+        confidence: float = 0.9,
+        poll_interval: float = 0.3,
+    ) -> bool:
+        """Poll the screen until *template* disappears, or *timeout* elapses.
+
+        Args:
+            template: Template image (or path) to look for.
+            timeout: Maximum seconds to wait.
+            confidence: Minimum match confidence threshold.
+            poll_interval: Seconds between screenshot/match attempts.
+
+        Returns:
+            ``True`` once *template* is no longer found, ``False`` if
+            it is still visible when *timeout* elapses.
+
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            match = self.find_template(self.screenshot(), template, confidence=confidence)
+            if match is None:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(poll_interval)
+
+    # ------------------------------------------------------------------
+    # Bar gauges (health, shadow meter, stamina, ...)
+    # ------------------------------------------------------------------
+
+    def measure_bar_fill(
+        self,
+        image: Image,
+        region: Region,
+        filled_color: Color,
+        threshold: float | None = None,
+    ) -> float:
+        """Measure how much of a horizontal bar gauge is filled.
+
+        Generic reusable primitive for any left-to-right depleting/
+        filling bar (health, shadow/energy meter, stamina, a loading
+        bar) — a game supplies the bar's screen *region* and the
+        colour of its "filled" segment via its knowledge base; this
+        function has no game-specific knowledge.
+
+        Scans a single horizontal line through the middle of *region*
+        from left to right and returns the fraction of pixels, up to
+        the first non-matching pixel, that match *filled_color*.
+
+        Args:
+            image: The captured frame to measure.
+            region: The bar's screen region.
+            filled_color: The colour of the bar's filled segment.
+            threshold: Colour distance threshold (uses config default
+                when ``None``).
+
+        Returns:
+            Fraction filled, from ``0.0`` (empty) to ``1.0`` (full).
+
+        """
+        if region.width <= 0:
+            return 0.0
+        match_threshold = threshold if threshold is not None else self._pixel_threshold
+        row_y = region.y + region.height // 2
+        filled = 0
+        for dx in range(region.width):
+            if self.pixel_matches(image, region.x + dx, row_y, filled_color, match_threshold):
+                filled = dx + 1
+            else:
+                break
+        return filled / region.width
 
     # ------------------------------------------------------------------
     # OCR (stub)

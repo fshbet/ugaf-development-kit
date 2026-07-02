@@ -1,0 +1,17 @@
+name: Demo Workflow
+id: demo_workflow
+author: UGAF Team
+version: 1.0.0
+description: >-
+  End-to-end demonstration of the UGAF Version 0.1 workflow: capture the
+  screen, find a template image, tap it, swipe, and enter text.
+supported_platforms:
+  - windows
+  - linux
+  - android
+minimum_framework_version: 1.0.0
+capabilities:
+  - input
+  - vision
+  - screenshot
+priority: 100

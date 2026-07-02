@@ -1,0 +1,15 @@
+# Default strategy: rotate advance + combo, with periodic ranged and
+# special moves. This reproduces the original (pre-refactor) hardcoded
+# combat loop exactly, now as editable data. Rules are evaluated
+# top-down; the first matching rule's moves run that cycle.
+name: balanced
+cycle_interval: 1.2
+rules:
+  - when: { cycle_mod: 6 }
+    do: shadow_burst
+  - when: { cycle_mod: 4 }
+    do: shuriken_throw
+  - when: { cycle_mod: 2 }
+    do: [advance, heavy_combo]
+  - when: always
+    do: [advance, jab_combo]

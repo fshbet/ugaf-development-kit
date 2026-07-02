@@ -1,0 +1,30 @@
+# Control layout for Shadow Fight 3's HUD, as fractions of screen
+# width/height (0.0-1.0) so the same file works on any device
+# resolution — pixel coordinates are resolved at runtime from the
+# connected device's detected screen size (see
+# ugaf/automation/knowledge.py:ControlLayout).
+#
+# Layout: bottom-left 8-directional joystick; bottom-right 4-button
+# cluster (shuriken above, shadow ability left, punch right, kick
+# below).
+controls:
+  joystick:
+    type: analog
+    center: { x: 0.12, y: 0.78 }
+    radius: 0.09
+
+  punch:
+    type: button
+    position: { x: 0.96, y: 0.70 }
+
+  kick:
+    type: button
+    position: { x: 0.88, y: 0.85 }
+
+  shadow:
+    type: button
+    position: { x: 0.78, y: 0.70 }
+
+  shuriken:
+    type: button
+    position: { x: 0.88, y: 0.58 }

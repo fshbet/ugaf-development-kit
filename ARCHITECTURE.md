@@ -42,6 +42,25 @@ Use dependency injection, event bus and configuration-driven design.
   plugin's `GameContext` when one is supplied, so a plugin resolves it and builds its
   own per-device `InputManager` instances rather than the framework prescribing a
   single global input target.
+- **Automation stack** (`ugaf.automation`): Knowledge -> Strategy -> Executor —
+  reusable, game-agnostic modules that let a plugin's actual behaviour live in YAML
+  instead of Python. `ugaf.automation.knowledge.KnowledgeBase` loads a game's named
+  moves (`knowledge/moves.yaml`, ordered generic action steps + metadata) and control
+  layout (`knowledge/buttons.yaml`, screen positions as resolution-independent
+  fractions). `ugaf.automation.strategy.StrategyEngine` evaluates a game's
+  `strategies/*.yaml` (ordered condition -> move-name rules) each cycle to decide what
+  to do. `ugaf.automation.executor.Executor` turns a move's step sequence into real
+  `InputManager` calls (`tap`, `move`, `hold`, `wait`) — it has zero game-specific
+  knowledge. None of these three modules know anything about any specific game; a
+  plugin only wires them to a connected device. See `games/shadow_fight_3/README.md`
+  for a worked example and ADR-014 in `ARCHITECTURE_DECISIONS.md`.
+- **Web control panel** (`ugaf.webapp`): a FastAPI backend + static HTML/JS frontend
+  that lets a user detect devices, view the live screen, tap/swipe/type, and run
+  plugins from a browser with no code or ADB knowledge. `AppSession`
+  (`ugaf.webapp.session`) is a thin wrapper around one `Application` instance — every
+  route in `ugaf.webapp.server` delegates to it; no automation logic lives in the web
+  layer itself. One `InputManager`/`ScreenshotManager` pair per connected device,
+  consistent with the multi-device design below.
 
 ## Multi-device design (established Milestone 4)
 
