@@ -345,3 +345,53 @@ class TestMonitoring:
     async def test_stop_monitoring_without_start_is_noop(self) -> None:
         mgr = DeviceManager()
         await mgr.stop_monitoring()  # should not raise
+
+
+class TestResolveDevice:
+    def test_resolves_sole_online_device(self) -> None:
+        mgr = DeviceManager()
+        provider = _FakeProvider()
+        provider.devices = [_device("d1", DeviceStatus.ONLINE)]
+        mgr.register_provider("fake", provider)
+
+        assert mgr.resolve_device() == "d1"
+
+    def test_configured_device_wins_even_with_others_online(self) -> None:
+        mgr = DeviceManager()
+        provider = _FakeProvider()
+        provider.devices = [_device("d1", DeviceStatus.ONLINE), _device("d2", DeviceStatus.ONLINE)]
+        mgr.register_provider("fake", provider)
+
+        assert mgr.resolve_device(configured="d2") == "d2"
+
+    def test_configured_device_not_online_raises_with_its_status(self) -> None:
+        mgr = DeviceManager()
+        provider = _FakeProvider()
+        provider.devices = [_device("d1", DeviceStatus.OFFLINE)]
+        mgr.register_provider("fake", provider)
+
+        with pytest.raises(DeviceNotConnectedError, match="offline"):
+            mgr.resolve_device(configured="d1")
+
+    def test_configured_device_unknown_raises_not_found(self) -> None:
+        mgr = DeviceManager()
+        mgr.register_provider("fake", _FakeProvider())
+
+        with pytest.raises(DeviceNotConnectedError, match="not found"):
+            mgr.resolve_device(configured="ghost")
+
+    def test_no_devices_online_raises(self) -> None:
+        mgr = DeviceManager()
+        mgr.register_provider("fake", _FakeProvider())
+
+        with pytest.raises(DeviceNotConnectedError, match="No online"):
+            mgr.resolve_device()
+
+    def test_multiple_devices_online_without_configured_raises(self) -> None:
+        mgr = DeviceManager()
+        provider = _FakeProvider()
+        provider.devices = [_device("d1", DeviceStatus.ONLINE), _device("d2", DeviceStatus.ONLINE)]
+        mgr.register_provider("fake", provider)
+
+        with pytest.raises(DeviceNotConnectedError, match="Multiple devices online"):
+            mgr.resolve_device()

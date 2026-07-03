@@ -54,13 +54,29 @@ Use dependency injection, event bus and configuration-driven design.
   knowledge. None of these three modules know anything about any specific game; a
   plugin only wires them to a connected device. See `games/shadow_fight_3/README.md`
   for a worked example and ADR-014 in `ARCHITECTURE_DECISIONS.md`.
+- **Application Manager** (`ugaf.apps`): reusable Android application lifecycle
+  management, so no automation hand-rolls its own "is it installed, launch it, is it in
+  the foreground" logic. `ugaf.apps.manager.ApplicationManager` talks only to
+  `DeviceManager.execute_shell()` (never a transport directly) to check whether a
+  package is installed, launch it (via an explicit `launch_activity`, or the app's own
+  launcher intent when none is given — works for any installed app without knowing its
+  activity), poll for it reaching the foreground, and optionally force-stop it. Each
+  automation declares its target app as data (`app.yaml`: name, package, launch
+  activity, timeout/retries, expected startup templates, shutdown behaviour) via
+  `ugaf.apps.types.AppDefinition` — never hardcoded in Python. `PluginManager` registers
+  one `ApplicationManager` as a DI singleton (alongside `DeviceManager`), so every
+  plugin resolves the same instance for free. See `games/shadow_fight_3/app.yaml` for a
+  worked example and ADR-015 in `ARCHITECTURE_DECISIONS.md`.
 - **Web control panel** (`ugaf.webapp`): a FastAPI backend + static HTML/JS frontend
   that lets a user detect devices, view the live screen, tap/swipe/type, and run
-  plugins from a browser with no code or ADB knowledge. `AppSession`
-  (`ugaf.webapp.session`) is a thin wrapper around one `Application` instance — every
-  route in `ugaf.webapp.server` delegates to it; no automation logic lives in the web
-  layer itself. One `InputManager`/`ScreenshotManager` pair per connected device,
-  consistent with the multi-device design below.
+  automations from a browser with no code, no ADB commands, and no developer
+  terminology — "Automations" (not "plugins"), each showing its target application and
+  live status. `AppSession` (`ugaf.webapp.session`) is a thin wrapper around one
+  `Application` instance — every route in `ugaf.webapp.server` delegates to it; no
+  automation logic lives in the web layer itself. One `InputManager`/`ScreenshotManager`
+  pair per connected device, consistent with the multi-device design below. The frontend
+  (`ugaf/webapp/static/`) has no build step (plain HTML/CSS/JS) but follows a real design
+  system — see the "UI" note in `ugaf/webapp/static/style.css`'s design-token block.
 
 ## Multi-device design (established Milestone 4)
 
@@ -73,6 +89,35 @@ accurate online/offline/unauthorized pre-flight checks. This was a deliberate
 architecture-first decision (see `ARCHITECTURE_DECISIONS.md` ADR-011): a global
 multi-device-aware `InputManager` would conflate per-device state management with
 device orchestration, which `DeviceManager` already owns.
+
+## Startup workflow (established with the Application Manager)
+
+An automation with a target app (`app.yaml` present) never assumes the app is already
+open. `start()` runs, in order: resolve the target device (`DeviceManager.resolve_device`)
+-> confirm the app is installed (`ApplicationManager.is_installed`) -> launch it
+(`ApplicationManager.launch`) -> poll until it's confirmed in the foreground
+(`ApplicationManager.wait_for_foreground`) -> only then is the plugin's own automation
+loop started. A launch that never reaches the foreground retries up to
+`app.yaml`'s `launch_retries`, then raises — the plugin's `start()` fails loudly (visible
+as a clear error in the web UI) rather than silently beginning automation against the
+wrong screen. See `games/shadow_fight_3/plugin.py` for the reference implementation.
+
+## Future: automation recorder (design only, not yet implemented)
+
+Planned capability, not yet built: a recorder that watches a user interact with a
+connected device (tap/swipe/type events, screenshots at each step) and emits a YAML
+step list — using the same executor verbs `ugaf.automation.executor.Executor` already
+understands (`tap`, `move`/`swipe`, `hold`, `wait`), plus a `template_match`/`wait_for`
+verb for screen-state-gated steps (e.g. "wait for the fight button, then tap it").
+A recorded session becomes a `strategies/<name>.yaml` (or a new `knowledge/moves.yaml`
+entry) that a user can immediately edit and replay — no Python required to go from "I
+did this once" to "do this every time." Likely home: `ugaf.webapp` captures raw
+tap/swipe events already sent through its existing `/api/devices/{id}/tap`|`/swipe`
+routes; a record-mode toggle would log them (with the screenshot at time of action) to
+a session buffer, then a "Save as automation" action would write the YAML. Vision-gated
+waits would reuse `VisionManager.wait_until_visible`. Not started — flagged in
+`ROADMAP.md` as the next major capability once vision-driven strategy conditions
+(health/shadow-meter reading) are wired up.
 
 ## Platform priority
 

@@ -1,0 +1,23 @@
+# Application metadata for Shadow Fight 3, consumed by
+# ugaf.apps.manager.ApplicationManager. Confirmed against a real
+# device via `adb shell pm list packages | grep nekki` and
+# `adb shell cmd package resolve-activity --brief com.nekki.shadowfight3`.
+name: Shadow Fight 3
+package: com.nekki.shadowfight3
+launch_activity: com.nekki.unityplugins.NekkiNativeActivity
+orientation: landscape
+launch_timeout: 20.0
+launch_retries: 2
+
+# No calibrated template images exist yet for this game (see
+# knowledge/templates/README.md) — foreground-package confirmation is
+# the only readiness check for now. Add template names here (relative
+# to knowledge/templates/) once real captures exist, to also wait for
+# a known-good startup screen before automation begins.
+expected_startup_templates: []
+
+expected_resolution: null
+
+# Never force-close a fighting game mid-progress; the user closes it
+# manually or via the OS.
+shutdown_behavior: leave_running

@@ -15,6 +15,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from ugaf.apps.types import AppDefinition
 from ugaf.core.bootstrap import Application
 from ugaf.core.config import Config
 from ugaf.imaging.image import Image
@@ -24,6 +25,8 @@ from ugaf.platform.device import DeviceInfo
 from ugaf.sdk.state import GameState
 from ugaf.vision.adb_screenshot import AdbScreenshotProvider
 from ugaf.vision.screenshot_manager import ScreenshotManager
+
+_DEFAULT_GAMES_DIR = Path("games")
 
 __all__ = [
     "AppSession",
@@ -93,6 +96,7 @@ class AppSession:
 
         """
         self.app = Application(config_path=config_path, games_dir=games_dir)
+        self._games_dir = Path(games_dir) if games_dir else _DEFAULT_GAMES_DIR
         self._connections: dict[str, DeviceConnection] = {}
         self._imaging = ImagingManager()
         self.log_buffer: deque[dict[str, Any]] = deque(maxlen=log_buffer_size)
@@ -192,11 +196,11 @@ class AppSession:
         self._require_connection(device_id).input_manager.type_text(text)
 
     # ------------------------------------------------------------------
-    # Plugins
+    # Automations (game/app plugins)
     # ------------------------------------------------------------------
 
     def list_plugins(self) -> list[dict[str, Any]]:
-        """Return metadata for every registered plugin as plain dicts (JSON-friendly).
+        """Return metadata for every registered automation as plain dicts (JSON-friendly).
 
         Uses the registry directly rather than ``discover()`` — plugins
         are already discovered once at ``Application.start()``, and
@@ -204,6 +208,11 @@ class AppSession:
         (duplicates of already-registered ones are silently skipped),
         so calling it again here would return an empty list once
         the app has started.
+
+        Each entry includes ``target_app`` (name/package) when the
+        automation declares one via ``app.yaml`` — ``None`` for
+        automations with no target Android application (e.g. a
+        desktop-only demo).
         """
         assert self.app.plugin_manager is not None
         metas = self.app.plugin_manager.registry.list()
@@ -215,9 +224,18 @@ class AppSession:
                 "author": m.author,
                 "description": m.description,
                 "capabilities": [c.value for c in m.capabilities],
+                "target_app": self._target_app(m.id),
             }
             for m in metas
         ]
+
+    def _target_app(self, plugin_id: str) -> dict[str, str] | None:
+        """Return ``{"name": ..., "package": ...}`` for *plugin_id*'s ``app.yaml``, if any."""
+        app_path = self._games_dir / plugin_id / "app.yaml"
+        if not app_path.exists():
+            return None
+        app = AppDefinition.load(app_path)
+        return {"name": app.name, "package": app.package}
 
     async def run_plugin(self, plugin_id: str) -> None:
         """Get a plugin running, regardless of its current lifecycle state.
@@ -228,6 +246,12 @@ class AppSession:
         restarted — the UI's "Run" button should never fail just
         because it was clicked more than once.
 
+        A plugin can also reach ``GameState.CREATED`` (registered but
+        never initialized) before the user ever clicks "Run", as a
+        side effect of ``plugin_health()`` calling ``load()`` — the
+        automation list polls health to show live status. Treat that
+        the same as "never touched": initialize, then start.
+
         Raises:
             GameSDKError: If *plugin_id* is unknown, or in a terminal
                 state (``SHUTDOWN``/``ERROR``) that cannot be resumed.
@@ -237,7 +261,7 @@ class AppSession:
         manager = self.app.plugin_manager
         lifecycle = manager.lifecycles.get(plugin_id)
 
-        if lifecycle is None:
+        if lifecycle is None or lifecycle.state is GameState.CREATED:
             await manager.initialize(plugin_id)
             await manager.start(plugin_id)
         elif lifecycle.state is GameState.RUNNING:
@@ -249,8 +273,7 @@ class AppSession:
         elif lifecycle.state is GameState.STOPPED:
             await manager.start(plugin_id)
         else:
-            # CREATED (shouldn't happen via load(), but be defensive),
-            # ERROR, or SHUTDOWN: let start() raise the real error.
+            # ERROR or SHUTDOWN: let start() raise the real error.
             await manager.start(plugin_id)
 
     async def stop_plugin(self, plugin_id: str) -> None:

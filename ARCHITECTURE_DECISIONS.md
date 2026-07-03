@@ -615,3 +615,79 @@ A plugin adopts `ugaf.automation` by choice, not by framework requirement.
   auto-start, including `demo_workflow`, which needs no hardware at all. Fixed by
   making both methods fault-isolated per plugin (catch, log a warning, continue) —
   see `CHANGELOG.md`.
+
+---
+
+## ADR-015: Reusable `ApplicationManager` for Android app lifecycle, not per-plugin logic
+
+- **Status**: Accepted
+- **Date**: 2026-07-02
+
+### Context
+
+`games/shadow_fight_3` assumed the target game was already open before automation
+began — the user had to manually launch Shadow Fight 3 before clicking "Run." The V0.2
+directive requires the opposite: the user connects a device, picks an automation, and
+clicks Run — UGAF opens the target app itself. This is explicitly **not** a
+Shadow-Fight-3-specific feature: "every Android automation should reuse the same
+system," and a future automation (Calculator, Chrome, a different game) must get the
+same install-check/launch/foreground-verify workflow without writing new Python.
+
+### Decision
+
+`ugaf.apps.manager.ApplicationManager` is a new, single reusable class responsible for
+Android application lifecycle: `is_installed`, `list_packages`, `get_version`,
+`foreground_package`, `launch`, `wait_for_foreground`, `launch_and_wait` (the full
+workflow), and `stop`. It has zero game-specific code and talks only to
+`DeviceManager.execute_shell()` — never a transport (ADB) directly, mirroring how
+`DeviceManager` itself never lets `ugaf.core` touch a transport directly. Per-app
+identity and behaviour (package name, launch activity, timeouts/retries, expected
+startup templates, shutdown behaviour) is data: `ugaf.apps.types.AppDefinition`,
+loaded from an `app.yaml` a plugin ships alongside its `manifest.yaml`/`config.yaml`.
+`PluginManager` registers one `ApplicationManager` instance as a DI singleton
+(alongside the existing `DeviceManager` singleton) in `_get_or_create_context`, so
+every plugin resolves the same instance — no plugin constructs its own.
+
+`ShadowFight3Game.start()` is the first (and reference) consumer: resolve the target
+device via `DeviceManager.resolve_device()` -> `ApplicationManager.launch_and_wait()`
+-> only on success does it proceed to connect `InputManager`/`ScreenshotManager` and
+start the combat loop. A failed launch raises `GameSDKError` with a clear message
+("Shadow Fight 3 is not ready: ...") instead of silently automating against whatever
+happened to be on screen.
+
+Launching prefers an explicit `launch_activity` (`am start -n pkg/activity`) when
+`app.yaml` provides one (more deterministic — confirmed against the real device via
+`adb shell cmd package resolve-activity --brief <pkg>`), and falls back to the app's
+own launcher intent (`monkey -p <pkg> -c android.intent.category.LAUNCHER 1`) when
+none is given — this is what makes "any installed app, not just Shadow Fight 3" true
+without per-app Python.
+
+### Consequences
+
+- Positive: adding a second app-backed automation (Calculator, Chrome, a future game)
+  requires an `app.yaml` and reusing the same `ApplicationManager`/`DeviceManager`
+  singletons — no new Python lifecycle code.
+- Positive: validated live on real hardware — `ApplicationManager` detected
+  `com.nekki.shadowfight3` installed, launched it via its resolved main activity,
+  confirmed foreground in a single attempt (~4-7s), and the combat loop only began
+  after that confirmation. Verified visually via a live screenshot showing the game's
+  actual title screen before automation started.
+- Positive: `DeviceManager.resolve_device()` (new, small, reusable) gives one canonical
+  place to answer "which device do I target" — replacing what would otherwise be a
+  third independent copy of "configured id, or the sole online device" logic (after
+  `AdbInputProvider` and `AdbScreenshotProvider` each already had their own).
+- Negative (found and fixed in the same pass): validating this live surfaced a second
+  real bug — `AppSession.run_plugin()`'s idempotency check only handled
+  `lifecycle is None`, not `GameState.CREATED`. The web UI's automation list now polls
+  `/health` to show live status, and `PluginManager.health()` calls `load()` as a side
+  effect (creating a `CREATED`-state lifecycle) — so any automation whose health was
+  ever checked before its first "Run" click hit `Cannot transition from 'created' to
+  'running'`. Fixed by treating `CREATED` the same as "never touched" (initialize then
+  start). Covered by a regression test
+  (`test_run_succeeds_after_a_prior_health_check`) that reproduces the exact
+  poll-then-run sequence.
+- Negative: foreground-detection regex (`dumpsys window windows` / `dumpsys activity
+  activities` parsing) is inherently a bit fragile across Android/OEM versions — it's
+  the same category of risk `AdbDeviceProvider`'s device-state parsing already carries,
+  documented rather than solved (mirrors existing project precedent of treating
+  device/OS quirks as documented constraints, not framework bugs).

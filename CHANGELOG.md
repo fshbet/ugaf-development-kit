@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### Version 0.2: Application Manager + professional UI redesign
+
+#### Added
+
+- **`ugaf.apps`**: a new, reusable Application Manager (`ApplicationManager`) for
+  Android application lifecycle — install detection, launch (explicit activity or the
+  app's own launcher intent), foreground verification with retry, and optional
+  force-stop. Per-app identity/behaviour is data (`AppDefinition`, loaded from an
+  `app.yaml`), never hardcoded Python. Registered as a DI singleton in `PluginManager`
+  alongside `DeviceManager`, so every plugin gets the same instance for free — not
+  built specifically for Shadow Fight 3. See ADR-015 in `ARCHITECTURE_DECISIONS.md`.
+- **`DeviceManager.resolve_device()`**: canonical "which device do I target" helper
+  (configured id, or the sole online device) — replacing what would have been a third
+  independent copy of that logic.
+- **`games/shadow_fight_3/app.yaml`**: declares the real package
+  (`com.nekki.shadowfight3`) and main activity
+  (`com.nekki.unityplugins.NekkiNativeActivity`), both confirmed against the real
+  connected device via `adb shell pm list packages` /
+  `adb shell cmd package resolve-activity --brief`. The plugin's `start()` now runs the
+  full startup workflow (resolve device -> confirm installed -> launch -> verify
+  foreground) before the combat loop begins — validated live: the game's real title
+  screen was visually confirmed on screen before automation started.
+- **Web UI professional redesign**: `ugaf/webapp/static/{index.html,style.css,app.js}`
+  rebuilt with a real design system (typography, spacing, elevation, light/dark color
+  tokens), a phone-frame device viewer with a proper empty state, status-pill
+  automations list showing each automation's target application and live
+  running/idle/error state with a busy spinner during launch, a status-banner "Current
+  Action" indicator, and a color-coded activity log console. "Plugins" renamed
+  "Automations" throughout — no ADB terminology exposed anywhere in the UI.
+
+#### Fixed
+
+- **Real bug found via this pass**: `AppSession.run_plugin()`'s idempotency check
+  didn't account for `GameState.CREATED` — the new automation list's live-status
+  polling calls `/health`, which calls `PluginManager.load()` as a side effect
+  (creating a `CREATED` lifecycle) before the user ever clicks "Run." Clicking Run from
+  that state hit `400 Cannot transition from 'created' to 'running'`. Fixed by treating
+  `CREATED` the same as "never touched" (initialize then start); covered by a
+  regression test that reproduces the exact poll-then-run sequence.
+
+#### Validation
+
+Full test suite (683 tests), ruff, and mypy pass. Validated live end-to-end on the same
+physical Xiaomi/HyperOS device: detected `com.nekki.shadowfight3` installed, launched
+it via the resolved main activity, confirmed foreground in a single attempt, the
+combat loop began only after that confirmation, and the redesigned UI correctly
+reflected device connection, live screen (showing the game's actual title/combat
+screens), and automation status throughout — including a spinner-labeled busy state
+during the ~4-8s launch window.
+
 ### Data-driven automation architecture: Knowledge -> Strategy -> Executor
 
 #### Added

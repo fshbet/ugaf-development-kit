@@ -6,8 +6,8 @@
     selectedDeviceId: null,
     zoom: 1.0,
     logSince: 0,
-    autoRefreshTimer: null,
     dragStart: null,
+    screenLoaded: false,
   };
 
   const el = (id) => document.getElementById(id);
@@ -21,34 +21,82 @@
     return res;
   }
 
-  function setAction(text) {
-    el("current-action").textContent = text;
+  // Classify a human-readable action message into a banner tone so the
+  // "Current Action" panel reads as a status indicator, not just a log line.
+  function classify(text) {
+    const t = text.toLowerCase();
+    if (/(failed|error|not ready|no device)/.test(t)) return "error";
+    if (/(…|connecting|capturing|launching|starting|typing|tapping|swiping|stopping)/.test(t)) return "busy";
+    if (/(connected|captured|sent|tapped|complete|running|stopped|launched)/.test(t)) return "success";
+    return "idle";
+  }
+
+  function setAction(text, kind) {
+    const tone = kind || classify(text);
+    const banner = el("current-action");
+    el("current-action-text").textContent = text;
+    banner.className = "status-banner" + (tone === "idle" ? "" : ` banner-${tone}`);
+  }
+
+  function setGlobalStatus(text, tone) {
+    const banner = el("global-status");
+    el("global-status-text").textContent = text;
+    banner.className = "status-banner" + (tone ? ` banner-${tone}` : "");
   }
 
   function selectedDevice() {
     return state.devices.find((d) => d.id === state.selectedDeviceId) || null;
   }
 
+  function refreshGlobalStatus() {
+    const connected = state.devices.filter((d) => d.connected);
+    if (connected.length === 0) {
+      setGlobalStatus("No device connected");
+    } else if (connected.length === 1) {
+      setGlobalStatus(`Connected · ${connected[0].name}`, "success");
+    } else {
+      setGlobalStatus(`${connected.length} devices connected`, "success");
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Devices
   // ---------------------------------------------------------------------
 
+  const DEVICE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2"/><line x1="11" y1="19" x2="13" y2="19"/></svg>`;
+
   async function refreshDevices() {
     const res = await api("/api/devices");
     state.devices = await res.json();
+    if (!state.selectedDeviceId && state.devices.length) {
+      state.selectedDeviceId = state.devices[0].id;
+    }
     renderDevices();
     renderDeviceInfo();
+    refreshGlobalStatus();
   }
 
   function renderDevices() {
     const list = el("device-list");
     list.innerHTML = "";
+    if (!state.devices.length) {
+      list.innerHTML = `<li class="empty-hint">No devices found. Connect a phone via USB (or ADB over Wi-Fi) with USB debugging enabled, then click refresh.</li>`;
+      return;
+    }
     for (const d of state.devices) {
       const li = document.createElement("li");
-      li.className = "device-item" + (d.id === state.selectedDeviceId ? " selected" : "");
+      li.className = "device-card" + (d.id === state.selectedDeviceId ? " selected" : "");
+      const statusClass = ["online", "offline", "unauthorized"].includes(d.status) ? d.status : "unknown";
       li.innerHTML = `
-        <div class="name">${d.name} (${d.id})</div>
-        <div class="status ${d.status}">${d.status}${d.connected ? " · connected" : ""}</div>
+        <div class="device-icon">${DEVICE_ICON}</div>
+        <div class="device-card-body">
+          <div class="name">${d.name}</div>
+          <div class="meta">
+            <span class="status-dot ${statusClass}"></span>
+            <span class="status-text ${statusClass}">${d.status}</span>
+            ${d.connected ? '<span class="connected-pill">Connected</span>' : ""}
+          </div>
+        </div>
       `;
       li.addEventListener("click", () => {
         state.selectedDeviceId = d.id;
@@ -66,26 +114,27 @@
       dl.innerHTML = "<dt>Status</dt><dd>No device selected</dd>";
       return;
     }
+    const statusClass = ["online", "offline", "unauthorized"].includes(d.status) ? d.status : "unknown";
     dl.innerHTML = `
-      <dt>ID</dt><dd>${d.id}</dd>
       <dt>Name</dt><dd>${d.name}</dd>
-      <dt>Status</dt><dd class="status ${d.status}">${d.status}</dd>
-      <dt>Transport</dt><dd>${d.transport}</dd>
-      <dt>Connected</dt><dd>${d.connected ? "yes" : "no"}</dd>
+      <dt>Serial</dt><dd class="mono-text">${d.id}</dd>
+      <dt>Status</dt><dd class="status-text ${statusClass}">${d.status}</dd>
+      <dt>Transport</dt><dd>${d.transport.toUpperCase()}</dd>
+      <dt>Connected</dt><dd>${d.connected ? "Yes" : "No"}</dd>
     `;
   }
 
   async function connectSelected() {
     const d = selectedDevice();
-    if (!d) return setAction("Select a device first");
-    setAction(`Connecting to ${d.id}…`);
+    if (!d) return setAction("Select a device first", "error");
+    setAction(`Connecting to ${d.name}…`);
     try {
       await api(`/api/devices/${d.id}/connect`, { method: "POST" });
-      setAction(`Connected to ${d.id}`);
+      setAction(`Connected to ${d.name}`);
       await refreshDevices();
       await captureScreenshot();
     } catch (err) {
-      setAction(`Connect failed: ${err.message}`);
+      setAction(`Connect failed: ${err.message}`, "error");
     }
   }
 
@@ -93,7 +142,8 @@
     const d = selectedDevice();
     if (!d) return;
     await api(`/api/devices/${d.id}/disconnect`, { method: "POST" });
-    setAction(`Disconnected from ${d.id}`);
+    setAction(`Disconnected from ${d.name}`);
+    setScreenVisible(false);
     await refreshDevices();
   }
 
@@ -101,9 +151,17 @@
   // Screen capture / tap / swipe
   // ---------------------------------------------------------------------
 
+  function setScreenVisible(visible) {
+    state.screenLoaded = visible;
+    el("screen-img").classList.toggle("hidden", !visible);
+    el("viewer-empty").classList.toggle("hidden", visible);
+    if (visible) el("coord-readout").textContent = "Click to tap · drag to swipe";
+    else el("coord-readout").textContent = "No device connected";
+  }
+
   async function captureScreenshot() {
     const d = selectedDevice();
-    if (!d) return setAction("Select and connect a device first");
+    if (!d) return setAction("Select and connect a device first", "error");
     setAction("Capturing screen…");
     try {
       const res = await api(`/api/devices/${d.id}/screenshot`);
@@ -112,10 +170,11 @@
       img.src = URL.createObjectURL(blob);
       img.onload = () => {
         img.style.width = `${img.naturalWidth * state.zoom}px`;
+        setScreenVisible(true);
       };
       setAction("Screen captured");
     } catch (err) {
-      setAction(`Screenshot failed: ${err.message}`);
+      setAction(`Screenshot failed: ${err.message}`, "error");
     }
   }
 
@@ -141,7 +200,7 @@
       });
       setAction(`Tapped (${x}, ${y})`);
     } catch (err) {
-      setAction(`Tap failed: ${err.message}`);
+      setAction(`Tap failed: ${err.message}`, "error");
     }
   }
 
@@ -157,17 +216,19 @@
       });
       setAction("Swipe complete");
     } catch (err) {
-      setAction(`Swipe failed: ${err.message}`);
+      setAction(`Swipe failed: ${err.message}`, "error");
     }
   }
 
   function setupScreenInteraction() {
     const img = el("screen-img");
     img.addEventListener("mousemove", (evt) => {
+      if (!state.screenLoaded) return;
       const { x, y } = imageToDeviceCoords(evt);
       el("coord-readout").textContent = `x=${x}, y=${y}`;
     });
     img.addEventListener("mousedown", (evt) => {
+      if (!state.screenLoaded) return;
       state.dragStart = imageToDeviceCoords(evt);
     });
     img.addEventListener("mouseup", async (evt) => {
@@ -207,48 +268,130 @@
       el("text-input").value = "";
       await captureScreenshot();
     } catch (err) {
-      setAction(`Text failed: ${err.message}`);
+      setAction(`Text failed: ${err.message}`, "error");
     }
   }
 
   // ---------------------------------------------------------------------
-  // Plugins
+  // Automations
   // ---------------------------------------------------------------------
+
+  const APP_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M8 12h8M12 8v8"/></svg>`;
+
+  const STATUS_LABEL = {
+    created: "Idle",
+    initialized: "Ready",
+    running: "Running",
+    paused: "Paused",
+    stopped: "Stopped",
+    shutdown: "Shut down",
+    error: "Error",
+  };
+
+  async function refreshAutomationStatus(li, automationId) {
+    try {
+      const res = await api(`/api/plugins/${automationId}/health`);
+      const health = await res.json();
+      applyAutomationStatus(li, health);
+    } catch {
+      // Health fetch failing shouldn't break the automation list.
+    }
+  }
+
+  function applyAutomationStatus(li, health) {
+    const pill = li.querySelector(".status-pill");
+    const statusKey = (health.status || "created").toLowerCase();
+    pill.textContent = STATUS_LABEL[statusKey] || health.status;
+    pill.className = `status-pill st-${statusKey}`;
+
+    li.classList.toggle("running", statusKey === "running" || statusKey === "paused");
+    li.classList.toggle("error", statusKey === "error");
+
+    const statusLine = li.querySelector(".automation-status-line");
+    if (health.target_app) {
+      const launched = health.target_app.launched;
+      statusLine.textContent = launched
+        ? `${health.target_app.name} is running on device`
+        : `${health.target_app.name} not yet launched`;
+    } else {
+      statusLine.textContent = "";
+    }
+  }
+
+  function setAutomationBusy(li, busy, label) {
+    const statusLine = li.querySelector(".automation-status-line");
+    li.querySelectorAll(".automation-actions button").forEach((btn) => (btn.disabled = busy));
+    if (busy) {
+      statusLine.innerHTML = `<span class="spinner"></span> ${label}`;
+    }
+  }
 
   async function refreshPlugins() {
     const res = await api("/api/plugins");
     const plugins = await res.json();
     const list = el("plugin-list");
     list.innerHTML = "";
+    el("automation-count").textContent = String(plugins.length);
+
+    if (!plugins.length) {
+      list.innerHTML = `<li class="empty-hint">No automations found under games/. Add a plugin folder with a manifest.yaml to see it here.</li>`;
+      return;
+    }
+
     for (const p of plugins) {
       const li = document.createElement("li");
-      li.className = "plugin-item";
+      li.className = "automation-card";
+      const targetChip = p.target_app
+        ? `<div class="target-app-chip">${APP_ICON}<span>${p.target_app.name}</span><span class="pkg">${p.target_app.package}</span></div>`
+        : "";
       li.innerHTML = `
-        <div class="name">${p.name} <span style="color:var(--muted)">v${p.version}</span></div>
-        <div class="desc">${p.description}</div>
-        <div class="row">
-          <button class="primary run-btn">Run</button>
-          <button class="stop-btn">Stop</button>
+        <div class="automation-head">
+          <div>
+            <span class="name">${p.name}</span>
+            <span class="automation-version">v${p.version}</span>
+          </div>
+          <span class="status-pill st-created">Idle</span>
+        </div>
+        <div class="automation-desc">${p.description}</div>
+        ${targetChip}
+        <div class="automation-status-line"></div>
+        <div class="automation-actions">
+          <button class="btn btn-primary btn-sm run-btn">
+            <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+            Start
+          </button>
+          <button class="btn btn-outline btn-sm stop-btn">
+            <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+            Stop
+          </button>
         </div>
       `;
       li.querySelector(".run-btn").addEventListener("click", async () => {
-        setAction(`Running plugin ${p.id}…`);
+        const label = p.target_app ? `Launching ${p.target_app.name}…` : `Starting ${p.name}…`;
+        setAction(label);
+        setAutomationBusy(li, true, label);
         try {
           await api(`/api/plugins/${p.id}/run`, { method: "POST" });
-          setAction(`Plugin ${p.id} running`);
+          setAction(`${p.name} running`);
         } catch (err) {
-          setAction(`Plugin run failed: ${err.message}`);
+          setAction(`${p.name} failed to start: ${err.message}`, "error");
         }
+        setAutomationBusy(li, false);
+        await refreshAutomationStatus(li, p.id);
       });
       li.querySelector(".stop-btn").addEventListener("click", async () => {
+        setAutomationBusy(li, true, `Stopping ${p.name}…`);
         try {
           await api(`/api/plugins/${p.id}/stop`, { method: "POST" });
-          setAction(`Plugin ${p.id} stopped`);
+          setAction(`${p.name} stopped`);
         } catch (err) {
-          setAction(`Plugin stop failed: ${err.message}`);
+          setAction(`${p.name} failed to stop: ${err.message}`, "error");
         }
+        setAutomationBusy(li, false);
+        await refreshAutomationStatus(li, p.id);
       });
       list.appendChild(li);
+      refreshAutomationStatus(li, p.id);
     }
   }
 
@@ -262,6 +405,7 @@
       const entries = await res.json();
       if (entries.length) {
         const panel = el("log-panel");
+        const wasAtBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 24;
         for (const e of entries) {
           const div = document.createElement("div");
           div.className = `log-line ${e.level}`;
@@ -269,7 +413,7 @@
           div.textContent = `[${ts}] ${e.level} ${e.logger}: ${e.message}`;
           panel.appendChild(div);
         }
-        panel.scrollTop = panel.scrollHeight;
+        if (wasAtBottom) panel.scrollTop = panel.scrollHeight;
         state.logSince += entries.length;
       }
     } catch (err) {
@@ -285,7 +429,7 @@
     const html = document.documentElement;
     const next = html.dataset.theme === "dark" ? "light" : "dark";
     html.dataset.theme = next;
-    el("theme-toggle").textContent = next === "dark" ? "Light mode" : "Dark mode";
+    el("theme-toggle-label").textContent = next === "dark" ? "Light mode" : "Dark mode";
   }
 
   function applyZoom(delta) {
@@ -302,6 +446,9 @@
     el("btn-disconnect").addEventListener("click", disconnectSelected);
     el("btn-screenshot").addEventListener("click", captureScreenshot);
     el("btn-send-text").addEventListener("click", sendText);
+    el("text-input").addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter") sendText();
+    });
     el("theme-toggle").addEventListener("click", toggleTheme);
     el("zoom-in").addEventListener("click", () => applyZoom(0.1));
     el("zoom-out").addEventListener("click", () => applyZoom(-0.1));

@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ugaf.apps.manager import ApplicationManager
 from ugaf.core.config import Config
 from ugaf.core.di import DependencyContainer
 from ugaf.core.event_bus import Event, EventBus
@@ -335,6 +336,8 @@ class PluginManager:
             self._register_vision_services(container)
             if self._device_manager is not None:
                 container.register_singleton(DeviceManager, self._device_manager)
+                app_manager = ApplicationManager(self._device_manager, logger=self._logger)
+                container.register_singleton(ApplicationManager, app_manager)
 
             self._context = GameContext(
                 config=self._config,

@@ -2,58 +2,131 @@
 <html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>UGAF Control Panel</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <header>
-    <h1>UGAF Control Panel</h1>
-    <button id="theme-toggle">Dark mode</button>
-  </header>
-
-  <main>
-    <section class="panel" id="left-panel">
-      <h2>Devices</h2>
-      <button id="refresh-devices">Refresh</button>
-      <ul id="device-list"></ul>
-
-      <h2>Plugins</h2>
-      <ul id="plugin-list"></ul>
-    </section>
-
-    <section class="panel" id="center-panel">
-      <div id="screen-wrap">
-        <img id="screen-img" alt="Device screen" />
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">UG</span>
+        <span class="brand-text">
+          <span class="brand-name">UGAF Control Panel</span>
+          <span class="brand-tag">Android automation platform</span>
+        </span>
       </div>
-      <div id="coord-readout">No device connected</div>
-      <div id="zoom-controls">
-        <button id="zoom-out">-</button>
-        <span id="zoom-level">100%</span>
-        <button id="zoom-in">+</button>
+      <div class="topbar-spacer"></div>
+      <div class="topbar-status">
+        <span class="status-banner" id="global-status">
+          <span class="banner-dot"></span>
+          <span id="global-status-text">No device connected</span>
+        </span>
       </div>
-    </section>
+      <button id="theme-toggle" class="icon-btn" aria-label="Toggle dark mode">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg>
+        <span id="theme-toggle-label">Dark mode</span>
+      </button>
+    </header>
 
-    <section class="panel" id="right-panel">
-      <h2>Device Info</h2>
-      <dl id="device-info">
-        <dt>Status</dt><dd>No device selected</dd>
-      </dl>
+    <main class="workspace">
+      <!-- ==================== Left sidebar ==================== -->
+      <aside class="panel sidebar-left">
+        <section class="panel-section">
+          <div class="section-header">
+            <h2>Devices</h2>
+            <button id="refresh-devices" class="btn-icon-sm" aria-label="Refresh devices" title="Refresh devices">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+          </div>
+          <ul id="device-list" class="device-list"></ul>
+        </section>
 
-      <h2>Current Action</h2>
-      <div id="current-action">Idle</div>
+        <section class="panel-section">
+          <div class="section-header">
+            <h2>Automations</h2>
+            <span class="badge" id="automation-count">0</span>
+          </div>
+          <ul id="plugin-list" class="automation-list"></ul>
+        </section>
+      </aside>
 
-      <h2>Log</h2>
-      <div id="log-panel"></div>
-    </section>
-  </main>
+      <!-- ==================== Center: device viewer ==================== -->
+      <section class="panel center-panel" id="center-panel">
+        <div class="viewer-toolbar">
+          <button id="btn-connect" class="btn btn-primary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6M6 12h12v3a6 6 0 0 1-12 0v-3ZM12 21v-3"/></svg>
+            Connect
+          </button>
+          <button id="btn-disconnect" class="btn btn-danger-outline">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 5.64a9 9 0 1 1-12.73 0M12 2v10"/></svg>
+            Disconnect
+          </button>
+          <button id="btn-screenshot" class="btn btn-outline">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2Z"/><circle cx="12" cy="13" r="4"/></svg>
+            Capture
+          </button>
 
-  <div class="toolbar">
-    <button id="btn-screenshot" class="primary">Capture Screen</button>
-    <button id="btn-connect" class="primary">Connect</button>
-    <button id="btn-disconnect" class="danger">Disconnect</button>
-    <input type="text" id="text-input" placeholder="Text to type on device…" />
-    <button id="btn-send-text">Send Text</button>
-    <label><input type="checkbox" id="auto-refresh" checked /> Auto-refresh screen</label>
+          <div class="viewer-toolbar-spacer"></div>
+
+          <label class="toggle-label">
+            <input type="checkbox" id="auto-refresh" checked />
+            Live refresh
+          </label>
+
+          <div class="zoom-controls">
+            <button id="zoom-out" class="btn-icon-sm" aria-label="Zoom out">−</button>
+            <span id="zoom-level">100%</span>
+            <button id="zoom-in" class="btn-icon-sm" aria-label="Zoom in">+</button>
+          </div>
+        </div>
+
+        <div class="viewer-stage">
+          <div id="screen-wrap">
+            <img id="screen-img" alt="Device screen" class="hidden" />
+            <div class="viewer-empty" id="viewer-empty">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2"/><line x1="11" y1="19" x2="13" y2="19"/></svg>
+              <p>Connect a device to see its live screen. Click the screen to tap, drag to swipe.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="viewer-footer">
+          <span id="coord-readout" class="mono-text">No device connected</span>
+        </div>
+
+        <div class="action-bar">
+          <input type="text" id="text-input" placeholder="Type text to send to the device…" />
+          <button id="btn-send-text" class="btn btn-primary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            Send
+          </button>
+        </div>
+      </section>
+
+      <!-- ==================== Right sidebar ==================== -->
+      <aside class="panel sidebar-right">
+        <section class="panel-section">
+          <div class="section-header"><h2>Device Info</h2></div>
+          <dl id="device-info" class="info-grid">
+            <dt>Status</dt><dd>No device selected</dd>
+          </dl>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-header"><h2>Current Action</h2></div>
+          <div id="current-action" class="status-banner">
+            <span class="banner-dot"></span>
+            <span id="current-action-text">Idle</span>
+          </div>
+        </section>
+
+        <section class="panel-section log-section">
+          <div class="section-header"><h2>Activity Log</h2></div>
+          <div id="log-panel" class="console"></div>
+        </section>
+      </aside>
+    </main>
   </div>
 
   <script src="/static/app.js"></script>

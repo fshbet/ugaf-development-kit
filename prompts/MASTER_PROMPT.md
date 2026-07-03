@@ -8,10 +8,19 @@ file is what actually governs current work.
 ## Philosophy
 
 The framework foundation is mature, and Version 0.1's core workflow is validated end
-to end on real hardware. Focus has shifted from **framework infrastructure** to
-**delivering a real, usable application** — usability, stability, and real-device
-validation over new abstractions.
+to end on real hardware. Version 0.2 shifted focus again: from **framework
+infrastructure** to **a polished, user-centric automation platform** — the user
+connects a device, picks an automation, and clicks Start; UGAF opens the target app
+itself. Usability, reliability, and reusable automation (not per-game Python) are the
+priority over new framework complexity.
 
+- The user should never need to: open the target app manually, remember ADB commands,
+  hand-tune coordinates, or edit Python for normal automation use. UGAF prepares the
+  environment (`ugaf.apps.ApplicationManager`'s startup workflow — see ADR-015).
+- A new automation capability (a new game, a new target app) must be reusable
+  platform capability, not something built specifically for one game. If you find
+  yourself writing Shadow-Fight-3-specific (or any-single-app-specific) logic outside
+  `games/<that_app>/`, it probably belongs in `ugaf.apps`/`ugaf.automation` instead.
 - Keep the implementation simple. Do not build for hypothetical future features.
 - When two solutions are valid, choose the simpler one unless there is clear technical
   evidence the extra complexity is required.
@@ -53,7 +62,10 @@ validation over new abstractions.
 - **`ugaf.webapp`** is the user-facing application (browser-based control panel) —
   it's a thin FastAPI/HTML layer over the existing framework, not a new automation
   path. It must never contain automation logic itself; every route delegates to an
-  existing manager.
+  existing manager. User-facing terminology is application-oriented ("Automations",
+  target app names/status), never ADB/developer jargon. The frontend follows the
+  design-token system in `ugaf/webapp/static/style.css` — extend it, don't bypass it
+  with one-off inline styles.
 - **`ugaf.automation`** (Knowledge -> Strategy -> Executor) is how a plugin's actual
   behaviour should be expressed once it's more than a one-shot demo: moves and control
   layout as data (`knowledge/*.yaml`), behaviour as data (`strategies/*.yaml`), with
@@ -61,6 +73,13 @@ validation over new abstractions.
   A new game/app plugin should reach for this instead of hardcoding coordinates, combos,
   or decision logic in `plugin.py` — see `games/shadow_fight_3/` for the pattern and
   `ARCHITECTURE_DECISIONS.md` ADR-014 for why.
+- **`ugaf.apps.ApplicationManager`** is how a plugin gets its target Android app ready
+  before automating: installed check, launch, foreground verification with retry,
+  optional stop — all driven by an `app.yaml` (package, activity, timeouts, shutdown
+  behaviour), never hardcoded. Registered as a DI singleton in `PluginManager`
+  alongside `DeviceManager`; a plugin resolves it, it does not construct its own. See
+  ADR-015 for why this must stay reusable across every app-backed automation, not
+  become Shadow-Fight-3-specific.
 
 ## Documentation
 

@@ -102,6 +102,40 @@ extracted into a new reusable stack:
 See ADR-014 in `ARCHITECTURE_DECISIONS.md` and `games/shadow_fight_3/README.md` for
 the full design and how to edit behaviour without touching Python.
 
+## Version 0.2: Application Manager + professional UI (2026-07-02)
+
+Goal: the user connects a device, picks an automation, clicks Start — UGAF opens the
+target app itself. No manual app-launching, no ADB commands, no editing Python for
+normal use.
+
+- [x] `ugaf.apps.ApplicationManager` — reusable Android app lifecycle (install check,
+      launch, foreground verification with retry, optional stop). Not Shadow-Fight-3-
+      specific: registered as a DI singleton, resolvable by any plugin.
+- [x] `AppDefinition`/`app.yaml` — per-app identity and launch/shutdown behaviour as
+      data, never hardcoded package names or activities in Python.
+- [x] `DeviceManager.resolve_device()` — canonical target-device resolution, reused by
+      `ApplicationManager` and available to any future consumer.
+- [x] Startup workflow wired into `games/shadow_fight_3`: device -> installed -> launch
+      -> verify foreground -> automation ready -> execute strategy -> report status.
+      **Validated on real hardware**: `com.nekki.shadowfight3` detected installed,
+      launched via its resolved main activity, foreground confirmed in a single
+      attempt (~4-8s), and the combat loop began only after that confirmation — the
+      game's actual title screen was visually confirmed via a live screenshot before
+      automation started.
+- [x] Web UI renamed "Plugins" -> "Automations" throughout; each automation card shows
+      its target application and live status (idle/running/paused/error) with a busy
+      indicator during launch. No ADB terminology exposed anywhere.
+- [x] Full professional UI/UX redesign: real design system (typography, spacing,
+      elevation, light/dark tokens), phone-frame device viewer with a proper empty
+      state, status-pill/banner components, color-coded activity log.
+- [x] **Real bug found and fixed**: `AppSession.run_plugin()` 400'd with "Cannot
+      transition from 'created' to 'running'" the first time a never-before-run
+      automation's health was polled (a side effect of the new live-status UI) before
+      the user clicked Start. Fixed and covered by a regression test.
+
+See ADR-015 in `ARCHITECTURE_DECISIONS.md` for the full Application Manager design,
+and `ARCHITECTURE.md`'s "Startup workflow" section for the execution sequence.
+
 ---
 
 # Source-Verified Audit (historical)

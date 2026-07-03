@@ -171,6 +171,53 @@ class DeviceManager:
         """Return the last known device snapshot without re-polling."""
         return list(self._devices.values())
 
+    def resolve_device(self, configured: str | None = None) -> str:
+        """Resolve a single target device id, re-discovering first.
+
+        The single canonical place callers that need exactly one
+        device (an :class:`~ugaf.input.manager.InputManager`, an
+        :class:`~ugaf.apps.manager.ApplicationManager`, a screenshot
+        provider) should use to pick which device to target, instead
+        of each re-implementing "use the configured device, or the
+        sole online device" independently.
+
+        Args:
+            configured: An explicit device id (e.g. from
+                ``input.adb.default_device`` config), which always
+                wins if given. If ``None``, falls back to the sole
+                online device.
+
+        Returns:
+            The resolved device id.
+
+        Raises:
+            DeviceNotConnectedError: If *configured* is not currently
+                online, or if none/more than one device is online and
+                no *configured* value was given.
+
+        """
+        devices = self.discover()
+        online = [d for d in devices if d.status is DeviceStatus.ONLINE]
+        online_ids = [d.id for d in online]
+
+        if configured is not None:
+            if configured not in online_ids:
+                match = next((d for d in devices if d.id == configured), None)
+                if match is not None:
+                    raise DeviceNotConnectedError(
+                        f"Device {configured!r} is {match.status.value} (expected online)"
+                    )
+                raise DeviceNotConnectedError(f"Device {configured!r} not found")
+            return configured
+
+        if len(online) == 1:
+            return online[0].id
+        if not online:
+            raise DeviceNotConnectedError("No online Android devices connected")
+        raise DeviceNotConnectedError(
+            f"Multiple devices online ({online_ids}); specify one explicitly"
+        )
+
     # ------------------------------------------------------------------
     # Continuous monitoring
     # ------------------------------------------------------------------

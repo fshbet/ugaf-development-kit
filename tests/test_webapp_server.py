@@ -168,6 +168,25 @@ class TestPlugins:
             res = client.post("/api/plugins/nonexistent/run")
         assert res.status_code == 400
 
+    def test_run_succeeds_after_a_prior_health_check(self) -> None:
+        """Regression test: polling health before Run must not break Run.
+
+        ``plugin_health()`` calls ``PluginManager.load()`` as a side
+        effect (to build the lifecycle wrapper), which leaves the
+        plugin in ``GameState.CREATED`` — the automation list's status
+        polling does exactly this before a user ever clicks "Run". Run
+        must still succeed from that state, not 400 with "Cannot
+        transition from 'created' to 'running'".
+        """
+        demo_app = create_app(games_dir=Path("games"))
+        with TestClient(demo_app) as client:
+            health_res = client.get("/api/plugins/demo_workflow/health")
+            assert health_res.status_code == 200
+            assert health_res.json()["status"] == "created"
+
+            run_res = client.post("/api/plugins/demo_workflow/run")
+            assert run_res.status_code == 200
+
 
 class TestLogs:
     def test_logs_returns_list(self, app) -> None:

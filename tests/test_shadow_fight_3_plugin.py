@@ -19,10 +19,38 @@ from pathlib import Path
 import pytest
 
 from games.shadow_fight_3.plugin import ShadowFight3Game
+from ugaf.apps.manager import ApplicationManager
+from ugaf.apps.types import AppDefinition, LaunchResult
 from ugaf.core.bootstrap import Application
+from ugaf.device.manager import DeviceManager
 from ugaf.input.manager import InputManager
 
 _SCREEN_SIZE = (1080, 2400)
+_DEVICE_ID = "test-device"
+
+
+def _stub_successful_launch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bypass real ADB for device resolution and the app-launch workflow.
+
+    Shadow Fight 3 has no mock mode, so plugin-lifecycle tests stub the
+    two real-hardware touchpoints (which device to target, whether the
+    app launched) and let everything else — knowledge loading, strategy
+    selection, the executor loop — run for real.
+    """
+
+    async def fake_launch_and_wait(
+        self: ApplicationManager, device_id: str, app: AppDefinition
+    ) -> LaunchResult:
+        return LaunchResult(
+            success=True,
+            package=app.package,
+            foreground_package=app.package,
+            attempts=1,
+            elapsed=0.01,
+        )
+
+    monkeypatch.setattr(DeviceManager, "resolve_device", lambda self, configured=None: _DEVICE_ID)
+    monkeypatch.setattr(ApplicationManager, "launch_and_wait", fake_launch_and_wait)
 
 
 @pytest.mark.asyncio
@@ -64,6 +92,7 @@ async def test_combat_loop_runs_and_stops_cleanly_via_plugin_manager(
     monkeypatch.setattr(InputManager, "connect", fake_connect)
     monkeypatch.setattr(InputManager, "click", fake_click)
     monkeypatch.setattr(InputManager, "disconnect", lambda self: None)  # type: ignore[misc]
+    _stub_successful_launch(monkeypatch)
 
     app = Application(config_path=Path("config/default.yaml"), games_dir=Path("games"))
     await app.initialize()
@@ -95,6 +124,8 @@ async def test_combat_loop_runs_and_stops_cleanly_via_plugin_manager(
         assert health["status"] == "running"
         assert health["cycles_run"] > 0
         assert health["strategy"] == "balanced"
+        assert health["target_app"]["package"] == "com.nekki.shadowfight3"
+        assert health["target_app"]["launched"] is True
         assert len(clicks) > 0
 
         await manager.pause("shadow_fight_3")
@@ -119,6 +150,7 @@ async def test_switching_strategy_via_config_changes_reported_strategy(
     monkeypatch.setattr(InputManager, "connect", fake_connect)
     monkeypatch.setattr(InputManager, "click", lambda self, x, y, button="left": None)
     monkeypatch.setattr(InputManager, "disconnect", lambda self: None)  # type: ignore[misc]
+    _stub_successful_launch(monkeypatch)
 
     app = Application(config_path=Path("config/default.yaml"), games_dir=Path("games"))
     await app.initialize()
@@ -138,5 +170,45 @@ async def test_switching_strategy_via_config_changes_reported_strategy(
         assert game._strategy_engine.name == "aggressive"
 
         await manager.stop("shadow_fight_3")
+    finally:
+        await app.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_raises_and_never_connects_input_when_app_launch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Automation must never begin if the target app never reaches the foreground."""
+    connect_calls: list[None] = []
+
+    async def fake_launch_and_wait(
+        self: ApplicationManager, device_id: str, app: AppDefinition
+    ) -> LaunchResult:
+        return LaunchResult(
+            success=False,
+            package=app.package,
+            foreground_package=None,
+            attempts=3,
+            elapsed=1.0,
+            error="not installed",
+        )
+
+    monkeypatch.setattr(DeviceManager, "resolve_device", lambda self, configured=None: _DEVICE_ID)
+    monkeypatch.setattr(ApplicationManager, "launch_and_wait", fake_launch_and_wait)
+    monkeypatch.setattr(
+        InputManager, "connect", lambda self: connect_calls.append(None)  # type: ignore[func-returns-value]
+    )
+
+    app = Application(config_path=Path("config/default.yaml"), games_dir=Path("games"))
+    await app.initialize()
+    await app.start(auto_start_plugins=False)
+    manager = app.plugin_manager
+    assert manager is not None
+
+    try:
+        await manager.initialize("shadow_fight_3")
+        with pytest.raises(Exception, match="not ready"):
+            await manager.start("shadow_fight_3")
+        assert connect_calls == []
     finally:
         await app.stop()

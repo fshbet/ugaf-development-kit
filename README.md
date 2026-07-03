@@ -19,9 +19,11 @@ python -m ugaf.webapp --port 8420
 ```
 
 Open `http://127.0.0.1:8420` in a browser to detect connected Android devices, view
-the live screen, click to tap, drag to swipe, send text, and run plugins — all without
-touching ADB or writing code. See `ugaf/webapp/` for the FastAPI backend and static
-frontend.
+the live screen, click to tap, drag to swipe, send text, and run automations — all
+without touching ADB or writing code. For an automation with a target app (see
+`games/shadow_fight_3/app.yaml`), clicking **Start** launches the app itself and waits
+for it to reach the foreground before automation begins — no manual app-launching
+required. See `ugaf/webapp/` for the FastAPI backend and static frontend.
 
 ### Command-line
 
@@ -50,6 +52,13 @@ button positions, combat/workflow strategy), build on `ugaf.automation`
 (`KnowledgeBase` + `StrategyEngine` + `Executor`) instead of hardcoding logic in
 `plugin.py` — see `games/shadow_fight_3/README.md` for a worked example and
 `ARCHITECTURE_DECISIONS.md` ADR-014 for the design rationale.
+
+If a plugin targets a specific installed Android app, add an `app.yaml` (name,
+package, launch activity, timeouts, shutdown behaviour) and call
+`ugaf.apps.ApplicationManager.launch_and_wait()` at the start of `start()` — see
+`games/shadow_fight_3/app.yaml`/`plugin.py` and ADR-015. This gets the app launched
+and foreground-verified for free, reusing the same platform capability every
+app-backed automation shares.
 
 ## Known device-specific quirk: ADB input injection blocked
 
