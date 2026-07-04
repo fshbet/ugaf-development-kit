@@ -11,6 +11,10 @@ delegation to an existing manager.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import subprocess
+import sys
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -18,13 +22,23 @@ from typing import Any
 from ugaf.apps.types import AppDefinition
 from ugaf.core.bootstrap import Application
 from ugaf.core.config import Config
+from ugaf.emulator import EmulatorManager, SdkNotFoundError
 from ugaf.imaging.image import Image
 from ugaf.imaging.manager import ImagingManager
 from ugaf.input.manager import InputManager
 from ugaf.platform.device import DeviceInfo
 from ugaf.sdk.state import GameState
 from ugaf.vision.adb_screenshot import AdbScreenshotProvider
+from ugaf.vision.exceptions import ScreenshotError
+from ugaf.vision.screenshot import ScreenshotProvider
 from ugaf.vision.screenshot_manager import ScreenshotManager
+from ugaf.vision.window_capture import WindowCaptureProvider
+
+_ANDROID_STUDIO_CANDIDATES = (
+    r"%LOCALAPPDATA%\Programs\Android Studio\bin\studio64.exe",
+    r"C:\Program Files\Android\Android Studio\bin\studio64.exe",
+    r"C:\Program Files (x86)\Android\Android Studio\bin\studio64.exe",
+)
 
 _DEFAULT_GAMES_DIR = Path("games")
 
@@ -101,6 +115,9 @@ class AppSession:
         self._imaging = ImagingManager()
         self.log_buffer: deque[dict[str, Any]] = deque(maxlen=log_buffer_size)
         self._log_handler = _LogBufferHandler(self.log_buffer)
+        self._emulator_manager: EmulatorManager | None = None
+        self._emulator_error: str | None = None
+        self._emulator_manager_attempted = False
 
     async def start(self) -> None:
         """Initialize and start the underlying Application, and begin log capture.
@@ -133,15 +150,37 @@ class AppSession:
         """Return whether *device_id* has an active session connection."""
         return device_id in self._connections
 
-    def connect_device(self, device_id: str) -> None:
+    def connect_device(
+        self,
+        device_id: str,
+        capture_provider: str = "adb",
+        window_title: str | None = None,
+    ) -> None:
         """Create and connect an InputManager + ScreenshotManager for *device_id*.
 
-        A no-op if already connected. Every device the UI connects to
-        is an Android device reached over ADB — this always selects
-        the ``adb`` input provider rather than trusting the shared
+        A no-op if already connected. Input always goes over ADB
+        (input injection, device control, and app lifecycle stay on
+        ADB per ``ARCHITECTURE.md``) rather than trusting the shared
         framework config's ``input.provider`` (which defaults to
         ``windows``, meant for desktop input automation in a
-        different context).
+        different context) — only the *frame source* is selectable.
+
+        Args:
+            device_id: The device to connect to.
+            capture_provider: Which capture transport to use for
+                screenshots — ``"adb"`` (default, ``screencap`` over
+                ADB), or ``"window"`` (capture an emulator's window
+                directly; requires *window_title* and the optional
+                ``pywin32``/``mss`` dependencies).
+            window_title: Required when *capture_provider* is
+                ``"window"`` — the target window's title (exact or
+                substring match).
+
+        Raises:
+            ScreenshotError: If *capture_provider* is ``"window"`` and
+                *window_title* is not given, or the capture transport
+                itself is unavailable/misconfigured.
+
         """
         if device_id in self._connections:
             return
@@ -156,9 +195,26 @@ class AppSession:
         input_manager.connect()
 
         screenshot = ScreenshotManager(imaging=self._imaging)
-        screenshot.connect_with(AdbScreenshotProvider(self._imaging, device_id=device_id))
+        screenshot.connect_with(
+            self._build_capture_provider(device_id, capture_provider, window_title)
+        )
 
         self._connections[device_id] = DeviceConnection(device_id, input_manager, screenshot)
+
+    def _build_capture_provider(
+        self, device_id: str, capture_provider: str, window_title: str | None
+    ) -> ScreenshotProvider:
+        """Construct the requested capture transport for a new device connection."""
+        if capture_provider == "adb":
+            return AdbScreenshotProvider(self._imaging, device_id=device_id)
+        if capture_provider == "window":
+            if not window_title:
+                raise ScreenshotError(
+                    "capture_provider='window' requires a window_title "
+                    "(the emulator window's title)"
+                )
+            return WindowCaptureProvider(self._imaging, window_title=window_title)
+        raise ScreenshotError(f"Unknown capture_provider: {capture_provider!r}")
 
     def disconnect_device(self, device_id: str) -> None:
         """Disconnect and forget *device_id*'s connection, if any."""
@@ -170,6 +226,20 @@ class AppSession:
         if device_id not in self._connections:
             raise KeyError(f"Device {device_id!r} is not connected")
         return self._connections[device_id]
+
+    def device_metrics(self, device_id: str) -> dict[str, Any]:
+        """Return capture and input performance metrics for a connected device.
+
+        Reports capture FPS/latency (whichever transport is active —
+        ADB, window capture, or scrcpy, all measured the same way) and
+        input latency, so the UI can compare transports on equal
+        footing.
+        """
+        connection = self._require_connection(device_id)
+        return {
+            "capture": connection.screenshot.metrics.as_dict(),
+            "input": connection.input_manager.metrics.as_dict(),
+        }
 
     # ------------------------------------------------------------------
     # Screen / input actions
@@ -237,7 +307,7 @@ class AppSession:
         app = AppDefinition.load(app_path)
         return {"name": app.name, "package": app.package}
 
-    async def run_plugin(self, plugin_id: str) -> None:
+    async def run_plugin(self, plugin_id: str, device_id: str | None = None) -> None:
         """Get a plugin running, regardless of its current lifecycle state.
 
         Idempotent and state-aware: a fresh plugin is
@@ -252,6 +322,15 @@ class AppSession:
         automation list polls health to show live status. Treat that
         the same as "never touched": initialize, then start.
 
+        Args:
+            plugin_id: The automation to run.
+            device_id: If given, runs a device-bound instance of this
+                automation (see ``PluginManager``'s ``device_id``
+                parameter) — letting the same automation run
+                concurrently against several devices, each with
+                independent state. ``None`` uses the single shared
+                instance, as before.
+
         Raises:
             GameSDKError: If *plugin_id* is unknown, or in a terminal
                 state (``SHUTDOWN``/``ERROR``) that cannot be resumed.
@@ -259,33 +338,170 @@ class AppSession:
         """
         assert self.app.plugin_manager is not None
         manager = self.app.plugin_manager
-        lifecycle = manager.lifecycles.get(plugin_id)
+        key = plugin_id if device_id is None else f"{plugin_id}@{device_id}"
+        lifecycle = manager.lifecycles.get(key)
 
         if lifecycle is None or lifecycle.state is GameState.CREATED:
-            await manager.initialize(plugin_id)
-            await manager.start(plugin_id)
+            await manager.initialize(plugin_id, device_id=device_id)
+            await manager.start(plugin_id, device_id=device_id)
         elif lifecycle.state is GameState.RUNNING:
             return
         elif lifecycle.state is GameState.INITIALIZED:
-            await manager.start(plugin_id)
+            await manager.start(plugin_id, device_id=device_id)
         elif lifecycle.state is GameState.PAUSED:
-            await manager.resume(plugin_id)
+            await manager.resume(plugin_id, device_id=device_id)
         elif lifecycle.state is GameState.STOPPED:
-            await manager.start(plugin_id)
+            await manager.start(plugin_id, device_id=device_id)
         else:
             # ERROR or SHUTDOWN: let start() raise the real error.
-            await manager.start(plugin_id)
+            await manager.start(plugin_id, device_id=device_id)
 
-    async def stop_plugin(self, plugin_id: str) -> None:
+    async def stop_plugin(self, plugin_id: str, device_id: str | None = None) -> None:
         """Stop a plugin if it is currently running or paused; a no-op otherwise."""
         assert self.app.plugin_manager is not None
         manager = self.app.plugin_manager
-        lifecycle = manager.lifecycles.get(plugin_id)
+        key = plugin_id if device_id is None else f"{plugin_id}@{device_id}"
+        lifecycle = manager.lifecycles.get(key)
         if lifecycle is None or lifecycle.state not in (GameState.RUNNING, GameState.PAUSED):
             return
-        await manager.stop(plugin_id)
+        await manager.stop(plugin_id, device_id=device_id)
 
-    async def plugin_health(self, plugin_id: str) -> dict[str, Any]:
+    async def plugin_health(self, plugin_id: str, device_id: str | None = None) -> dict[str, Any]:
         """Return a single plugin's health/status dict."""
         assert self.app.plugin_manager is not None
-        return await self.app.plugin_manager.health(plugin_id)
+        return await self.app.plugin_manager.health(plugin_id, device_id=device_id)
+
+    # ------------------------------------------------------------------
+    # Android Emulator (ugaf.emulator)
+    # ------------------------------------------------------------------
+
+    def _get_emulator_manager(self) -> EmulatorManager:
+        """Lazily construct the :class:`~ugaf.emulator.EmulatorManager`.
+
+        Construction shells out to locate the Android SDK, which some
+        installs (or CI/test environments) may not have — deferred
+        until the user actually selects "Android Emulator" so the rest
+        of the control panel works regardless.
+
+        Raises:
+            SdkNotFoundError: If no Android SDK installation is found.
+
+        """
+        if self._emulator_manager is None:
+            if self._emulator_manager_attempted and self._emulator_error is not None:
+                raise SdkNotFoundError(self._emulator_error)
+            self._emulator_manager_attempted = True
+            try:
+                self._emulator_manager = EmulatorManager()
+            except SdkNotFoundError as exc:
+                self._emulator_error = str(exc)
+                raise
+        return self._emulator_manager
+
+    def emulator_status(self) -> dict[str, Any]:
+        """Return whether the Emulator Manager is available, and why not if it isn't."""
+        try:
+            manager = self._get_emulator_manager()
+        except SdkNotFoundError as exc:
+            return {"available": False, "sdk_root": None, "error": str(exc)}
+        return {"available": True, "sdk_root": str(manager.sdk_paths.sdk_root), "error": None}
+
+    def list_manufacturers(self) -> list[str]:
+        """Return every supported device manufacturer."""
+        return self._get_emulator_manager().list_manufacturers()
+
+    def list_device_profiles(self, manufacturer: str) -> list[dict[str, Any]]:
+        """Return every device profile for *manufacturer* as plain dicts."""
+        profiles = self._get_emulator_manager().list_devices(manufacturer)
+        return [
+            {
+                "device_name": p.device_name,
+                "model": p.model,
+                "android_version": p.android_version,
+                "api_level": p.api_level,
+            }
+            for p in profiles
+        ]
+
+    def list_performance_profiles(self) -> list[str]:
+        """Return every performance preset name."""
+        return self._get_emulator_manager().list_performance_profiles()
+
+    def list_android_versions(self) -> list[dict[str, Any]]:
+        """Return every Android system image (installed or installable) as plain dicts."""
+        images = self._get_emulator_manager().list_android_versions()
+        return [
+            {
+                "api_level": img.api_level,
+                "version_name": img.version_name,
+                "tag": img.tag,
+                "abi": img.abi,
+                "installed": img.installed,
+            }
+            for img in images
+        ]
+
+    def list_avds(self) -> list[dict[str, Any]]:
+        """Return every known AVD (valid or broken) as plain dicts."""
+        avds = self._get_emulator_manager().list()
+        return [
+            {
+                "name": a.name,
+                "device": a.device,
+                "target": a.target,
+                "abi": a.abi,
+                "valid": a.valid,
+                "error": a.error,
+                "running": a.running,
+                "adb_serial": a.adb_serial,
+            }
+            for a in avds
+        ]
+
+    def create_avd(
+        self, name: str, manufacturer: str, device_name: str, performance_profile: str
+    ) -> dict[str, Any]:
+        """Create a new AVD from a manufacturer/device profile and performance preset."""
+        manager = self._get_emulator_manager()
+        avd = manager.create(name, manufacturer, device_name, performance_profile)
+        return {"name": avd.name, "valid": avd.valid, "error": avd.error}
+
+    def start_avd(self, name: str) -> dict[str, Any]:
+        """Launch an AVD as a new emulator instance."""
+        handle = self._get_emulator_manager().start(name)
+        return {
+            "name": handle.name,
+            "adb_serial": handle.adb_serial,
+            "console_port": handle.console_port,
+            "adb_port": handle.adb_port,
+        }
+
+    def stop_avd(self, name: str) -> None:
+        """Gracefully shut down a running AVD."""
+        self._get_emulator_manager().stop(name)
+
+    def delete_avd(self, name: str) -> None:
+        """Permanently delete an AVD."""
+        self._get_emulator_manager().delete(name)
+
+    def open_android_studio(self) -> bool:
+        """Best-effort launch of the Android Studio IDE, if found at a well-known path.
+
+        Returns:
+            ``True`` if a launch was attempted, ``False`` if Android
+            Studio could not be located.
+
+        """
+        if sys.platform != "win32":
+            found = shutil.which("studio") or shutil.which("android-studio")
+            if not found:
+                return False
+            subprocess.Popen([found])
+            return True
+
+        for candidate in _ANDROID_STUDIO_CANDIDATES:
+            path = Path(os.path.expandvars(candidate))
+            if path.is_file():
+                subprocess.Popen([str(path)])
+                return True
+        return False

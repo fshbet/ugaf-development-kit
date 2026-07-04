@@ -50,6 +50,22 @@ class TextRequest(BaseModel):
     text: str
 
 
+class ConnectRequest(BaseModel):
+    """Request body for connecting to a device, selecting its capture transport."""
+
+    capture_provider: str = "adb"
+    window_title: str | None = None
+
+
+class CreateAvdRequest(BaseModel):
+    """Request body for creating a new AVD."""
+
+    name: str
+    manufacturer: str
+    device_name: str
+    performance_profile: str = "mid_range"
+
+
 def create_app(
     config_path: Path | str | None = None,
     games_dir: Path | str | None = None,
@@ -101,12 +117,21 @@ def create_app(
         ]
 
     @app.post("/api/devices/{device_id}/connect")
-    async def connect_device(device_id: str) -> dict[str, Any]:
+    async def connect_device(device_id: str, body: ConnectRequest | None = None) -> dict[str, Any]:
+        request = body or ConnectRequest()
         try:
-            session.connect_device(device_id)
+            session.connect_device(
+                device_id,
+                capture_provider=request.capture_provider,
+                window_title=request.window_title,
+            )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"connected": True, "device_id": device_id}
+        return {
+            "connected": True,
+            "device_id": device_id,
+            "capture_provider": request.capture_provider,
+        }
 
     @app.post("/api/devices/{device_id}/disconnect")
     async def disconnect_device(device_id: str) -> dict[str, Any]:
@@ -123,6 +148,13 @@ def create_app(
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         png_bytes = session.encode_png(image)
         return StreamingResponse(io.BytesIO(png_bytes), media_type="image/png")
+
+    @app.get("/api/devices/{device_id}/metrics")
+    async def device_metrics(device_id: str) -> dict[str, Any]:
+        try:
+            return session.device_metrics(device_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/devices/{device_id}/tap")
     async def tap(device_id: str, body: TapRequest) -> dict[str, Any]:
@@ -153,25 +185,25 @@ def create_app(
         return session.list_plugins()
 
     @app.post("/api/plugins/{plugin_id}/run")
-    async def run_plugin(plugin_id: str) -> dict[str, Any]:
+    async def run_plugin(plugin_id: str, device_id: str | None = None) -> dict[str, Any]:
         try:
-            await session.run_plugin(plugin_id)
+            await session.run_plugin(plugin_id, device_id=device_id)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"running": plugin_id}
+        return {"running": plugin_id, "device_id": device_id}
 
     @app.post("/api/plugins/{plugin_id}/stop")
-    async def stop_plugin(plugin_id: str) -> dict[str, Any]:
+    async def stop_plugin(plugin_id: str, device_id: str | None = None) -> dict[str, Any]:
         try:
-            await session.stop_plugin(plugin_id)
+            await session.stop_plugin(plugin_id, device_id=device_id)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"stopped": plugin_id}
+        return {"stopped": plugin_id, "device_id": device_id}
 
     @app.get("/api/plugins/{plugin_id}/health")
-    async def plugin_health(plugin_id: str) -> dict[str, Any]:
+    async def plugin_health(plugin_id: str, device_id: str | None = None) -> dict[str, Any]:
         try:
-            return await session.plugin_health(plugin_id)
+            return await session.plugin_health(plugin_id, device_id=device_id)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -179,6 +211,86 @@ def create_app(
     async def logs(since: int = 0) -> list[dict[str, Any]]:
         entries = list(session.log_buffer)
         return entries[since:]
+
+    # ------------------------------------------------------------------
+    # Android Emulator (ugaf.emulator)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/emulator/status")
+    async def emulator_status() -> dict[str, Any]:
+        return session.emulator_status()
+
+    @app.get("/api/emulator/manufacturers")
+    async def list_manufacturers() -> list[str]:
+        try:
+            return session.list_manufacturers()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/emulator/manufacturers/{manufacturer}/devices")
+    async def list_device_profiles(manufacturer: str) -> list[dict[str, Any]]:
+        try:
+            return session.list_device_profiles(manufacturer)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/emulator/performance-profiles")
+    async def list_performance_profiles() -> list[str]:
+        try:
+            return session.list_performance_profiles()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/emulator/android-versions")
+    async def list_android_versions() -> list[dict[str, Any]]:
+        try:
+            return session.list_android_versions()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/emulator/avds")
+    async def list_avds() -> list[dict[str, Any]]:
+        try:
+            return session.list_avds()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/emulator/avds")
+    async def create_avd(body: CreateAvdRequest) -> dict[str, Any]:
+        try:
+            return session.create_avd(
+                body.name, body.manufacturer, body.device_name, body.performance_profile
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/emulator/avds/{name}/start")
+    async def start_avd(name: str) -> dict[str, Any]:
+        try:
+            return session.start_avd(name)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/emulator/avds/{name}/stop")
+    async def stop_avd(name: str) -> dict[str, Any]:
+        try:
+            session.stop_avd(name)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"stopped": name}
+
+    @app.delete("/api/emulator/avds/{name}")
+    async def delete_avd(name: str) -> dict[str, Any]:
+        try:
+            session.delete_avd(name)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"deleted": name}
+
+    @app.post("/api/emulator/open-android-studio")
+    async def open_android_studio() -> dict[str, Any]:
+        launched = session.open_android_studio()
+        return {"launched": launched}
 
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 

@@ -462,6 +462,25 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 
 .viewer-toolbar-spacer { flex: 1; }
 
+.hidden { display: none !important; }
+
+#capture-provider {
+  cursor: pointer;
+  padding-right: 8px;
+}
+
+#window-title {
+  width: 180px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+#window-title:focus { border-color: var(--accent); outline: none; }
+
 .zoom-controls {
   display: flex;
   align-items: center;
@@ -484,6 +503,58 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   user-select: none;
 }
 .toggle-label input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+
+/* ==========================================================================
+   Connection type / Android Emulator panel
+   ========================================================================== */
+.connection-type-toggle { display: flex; flex-direction: column; gap: 8px; }
+.radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.radio-label input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+
+.emulator-form { display: flex; flex-direction: column; gap: 4px; }
+.field-label { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+.field-label:first-child { margin-top: 0; }
+
+.select-field, .text-field {
+  width: 100%;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-family: var(--font);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--fast) var(--ease);
+}
+.select-field:focus, .text-field:focus { border-color: var(--accent); outline: none; }
+
+.emulator-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.emulator-actions .btn { flex: 1 1 auto; white-space: nowrap; }
+
+.banner-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12.5px;
+  border: 1px solid transparent;
+}
 
 .viewer-stage {
   flex: 1;

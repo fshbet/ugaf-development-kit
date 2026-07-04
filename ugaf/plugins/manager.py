@@ -5,6 +5,7 @@ Orchestrates discovery, loading, and lifecycle of UGAF game plugins.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from typing import Any
 
@@ -28,8 +29,35 @@ __all__ = [
 ]
 
 
+def _instance_key(plugin_id: str, device_id: str | None) -> str:
+    """Return the lifecycle dict key for a plugin instance.
+
+    A plain ``plugin_id`` when *device_id* is ``None`` (the original,
+    single-instance-per-plugin behaviour every existing caller relies
+    on), or a composite ``"{plugin_id}@{device_id}"`` key when a
+    specific device is given — this is what lets the *same* automation
+    run as several independent, concurrent instances, one per target
+    device (see :class:`PluginManager`'s class docstring).
+    """
+    return plugin_id if device_id is None else f"{plugin_id}@{device_id}"
+
+
 class PluginManager:
     """Orchestrates plugin discovery, loading, and lifecycle.
+
+    Every lifecycle method (``initialize``/``start``/``pause``/
+    ``resume``/``stop``/``shutdown``/``health``) accepts an optional
+    ``device_id``. Omitting it (the default) preserves the original
+    behaviour: one lifecycle instance per plugin, shared across
+    however it's invoked. Passing a ``device_id`` creates (or reuses)
+    a *separate* instance of that same plugin class bound to that
+    device — so ``games/shadow_fight_3`` can run concurrently against
+    two different phones, each with its own state, its own
+    :class:`~ugaf.sdk.state.GameState`, and its own logs, with a crash
+    in one instance never touching the other. This is deliberately not
+    a new subsystem: it is the same :class:`PluginLifecycle`,
+    ``GamePlugin`` instance, and instance dict this class already had —
+    only the dict key gained an optional device suffix.
 
     Usage::
 
@@ -40,11 +68,16 @@ class PluginManager:
             games_dir=Path("games"),
         )
         manager.discover()
+
+        # Single-instance (unchanged):
         await manager.initialize_all()
         await manager.start_all()
-        # ...
-        await manager.stop_all()
-        await manager.shutdown_all()
+
+        # Multi-device — two independent instances of the same plugin:
+        await manager.initialize("shadow_fight_3", device_id="deviceA")
+        await manager.initialize("shadow_fight_3", device_id="deviceB")
+        await manager.start("shadow_fight_3", device_id="deviceA")
+        await manager.start("shadow_fight_3", device_id="deviceB")
 
     """
 
@@ -102,12 +135,23 @@ class PluginManager:
 
     @property
     def lifecycles(self) -> dict[str, PluginLifecycle]:
-        """Return all managed lifecycle wrappers keyed by plugin ID."""
+        """Return all managed lifecycle wrappers, keyed by instance key.
+
+        The key is the plain plugin ID for a single (device_id-less)
+        instance, or ``"{plugin_id}@{device_id}"`` for a
+        device-bound instance — see :func:`_instance_key`.
+        """
         return dict(self._lifecycles)
 
     @property
     def context(self) -> GameContext | None:
-        """Return the game context, if created."""
+        """Return the shared game context, if created.
+
+        Device-bound instances (created with a ``device_id``) get
+        their own :class:`~ugaf.sdk.context.GameContext` copy with
+        ``device_id`` set — see :meth:`_get_or_create_context` — but
+        share this same underlying service container.
+        """
         return self._context
 
     # ------------------------------------------------------------------
@@ -162,11 +206,15 @@ class PluginManager:
 
         return discovered
 
-    def load(self, plugin_id: str) -> PluginLifecycle:
+    def load(self, plugin_id: str, device_id: str | None = None) -> PluginLifecycle:
         """Load and create a lifecycle wrapper for a registered plugin.
 
         Args:
             plugin_id: The plugin identifier.
+            device_id: If given, creates/reuses a distinct instance of
+                this plugin bound to this device (see the class
+                docstring); if omitted, reuses the single shared
+                instance as before.
 
         Returns:
             The :class:`PluginLifecycle` wrapper.
@@ -175,8 +223,9 @@ class PluginManager:
             KeyError: If the plugin is not registered.
 
         """
-        if plugin_id in self._lifecycles:
-            return self._lifecycles[plugin_id]
+        key = _instance_key(plugin_id, device_id)
+        if key in self._lifecycles:
+            return self._lifecycles[key]
 
         plugin_cls = self._registry.find(plugin_id)
         if plugin_cls is None:
@@ -193,54 +242,60 @@ class PluginManager:
             event_bus=event_bus,
             logger=self._logger,
         )
-        self._lifecycles[plugin_id] = lifecycle
+        self._lifecycles[key] = lifecycle
         return lifecycle
 
     # ------------------------------------------------------------------
     # Lifecycle: individual plugin
     # ------------------------------------------------------------------
 
-    async def initialize(self, plugin_id: str, context: GameContext | None = None) -> None:
-        """Initialize a single plugin.
+    async def initialize(
+        self,
+        plugin_id: str,
+        context: GameContext | None = None,
+        device_id: str | None = None,
+    ) -> None:
+        """Initialize a single plugin (or a specific device-bound instance of it).
 
         Args:
             plugin_id: The plugin identifier.
             context: Optional game context.  Uses the manager's context
                 if not provided.
+            device_id: See :meth:`load`.
 
         """
-        ctx = context or self._get_or_create_context()
-        lifecycle = self.load(plugin_id)
+        ctx = context or self._get_or_create_context(device_id=device_id)
+        lifecycle = self.load(plugin_id, device_id=device_id)
         await lifecycle.initialize(ctx)
 
-    async def start(self, plugin_id: str) -> None:
-        """Start a single plugin."""
-        lifecycle = self._get_lifecycle(plugin_id)
+    async def start(self, plugin_id: str, device_id: str | None = None) -> None:
+        """Start a single plugin (or a specific device-bound instance of it)."""
+        lifecycle = self._get_lifecycle(plugin_id, device_id=device_id)
         await lifecycle.start()
 
-    async def pause(self, plugin_id: str) -> None:
-        """Pause a single plugin."""
-        lifecycle = self._get_lifecycle(plugin_id)
+    async def pause(self, plugin_id: str, device_id: str | None = None) -> None:
+        """Pause a single plugin (or a specific device-bound instance of it)."""
+        lifecycle = self._get_lifecycle(plugin_id, device_id=device_id)
         await lifecycle.pause()
 
-    async def resume(self, plugin_id: str) -> None:
-        """Resume a single plugin."""
-        lifecycle = self._get_lifecycle(plugin_id)
+    async def resume(self, plugin_id: str, device_id: str | None = None) -> None:
+        """Resume a single plugin (or a specific device-bound instance of it)."""
+        lifecycle = self._get_lifecycle(plugin_id, device_id=device_id)
         await lifecycle.resume()
 
-    async def stop(self, plugin_id: str) -> None:
-        """Stop a single plugin."""
-        lifecycle = self._get_lifecycle(plugin_id)
+    async def stop(self, plugin_id: str, device_id: str | None = None) -> None:
+        """Stop a single plugin (or a specific device-bound instance of it)."""
+        lifecycle = self._get_lifecycle(plugin_id, device_id=device_id)
         await lifecycle.stop()
 
-    async def shutdown(self, plugin_id: str) -> None:
-        """Shut down a single plugin."""
-        lifecycle = self._get_lifecycle(plugin_id)
+    async def shutdown(self, plugin_id: str, device_id: str | None = None) -> None:
+        """Shut down a single plugin (or a specific device-bound instance of it)."""
+        lifecycle = self._get_lifecycle(plugin_id, device_id=device_id)
         await lifecycle.shutdown()
 
-    async def health(self, plugin_id: str) -> dict[str, Any]:
-        """Return health for a single plugin."""
-        lifecycle = self._get_lifecycle(plugin_id)
+    async def health(self, plugin_id: str, device_id: str | None = None) -> dict[str, Any]:
+        """Return health for a single plugin (or a specific device-bound instance of it)."""
+        lifecycle = self._get_lifecycle(plugin_id, device_id=device_id)
         return await lifecycle.health()
 
     # ------------------------------------------------------------------
@@ -272,41 +327,50 @@ class PluginManager:
         Fault-isolated per plugin, mirroring :meth:`initialize_all` —
         see its docstring for why.
         """
-        for plugin_id in self._sorted_lifecycle_ids():
-            lifecycle = self._lifecycles[plugin_id]
+        for key in self._sorted_lifecycle_ids():
+            lifecycle = self._lifecycles[key]
             if lifecycle.state is GameState.INITIALIZED:
                 try:
                     await lifecycle.start()
                 except Exception as exc:
                     self._logger.warning(
-                        "plugin_manager.start_all_failed", plugin_id=plugin_id, error=str(exc)
+                        "plugin_manager.start_all_failed", plugin_id=key, error=str(exc)
                     )
 
     async def pause_all(self) -> None:
         """Pause all running plugins."""
-        for plugin_id in self._sorted_lifecycle_ids():
-            lifecycle = self._lifecycles[plugin_id]
+        for key in self._sorted_lifecycle_ids():
+            lifecycle = self._lifecycles[key]
             if lifecycle.state is GameState.RUNNING:
                 await lifecycle.pause()
 
     async def resume_all(self) -> None:
         """Resume all paused plugins."""
-        for plugin_id in self._sorted_lifecycle_ids():
-            lifecycle = self._lifecycles[plugin_id]
+        for key in self._sorted_lifecycle_ids():
+            lifecycle = self._lifecycles[key]
             if lifecycle.state is GameState.PAUSED:
                 await lifecycle.resume()
 
     async def stop_all(self) -> None:
-        """Stop all running or paused plugins."""
-        for plugin_id in self._sorted_lifecycle_ids():
-            lifecycle = self._lifecycles[plugin_id]
+        """Stop all running or paused plugins.
+
+        Fault-isolated per instance: one device-bound instance failing
+        to stop cleanly does not block the others from stopping.
+        """
+        for key in self._sorted_lifecycle_ids():
+            lifecycle = self._lifecycles[key]
             if lifecycle.state in (GameState.RUNNING, GameState.PAUSED):
-                await lifecycle.stop()
+                try:
+                    await lifecycle.stop()
+                except Exception as exc:
+                    self._logger.warning(
+                        "plugin_manager.stop_all_failed", plugin_id=key, error=str(exc)
+                    )
 
     async def shutdown_all(self) -> None:
         """Shut down all plugins."""
-        for plugin_id in self._sorted_lifecycle_ids():
-            lifecycle = self._lifecycles[plugin_id]
+        for key in self._sorted_lifecycle_ids():
+            lifecycle = self._lifecycles[key]
             if lifecycle.state is not GameState.SHUTDOWN:
                 await lifecycle.shutdown()
 
@@ -314,23 +378,32 @@ class PluginManager:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_lifecycle(self, plugin_id: str) -> PluginLifecycle:
+    def _get_lifecycle(self, plugin_id: str, device_id: str | None = None) -> PluginLifecycle:
         """Return a lifecycle wrapper, loading it if necessary."""
-        if plugin_id not in self._lifecycles:
-            return self.load(plugin_id)
-        return self._lifecycles[plugin_id]
+        key = _instance_key(plugin_id, device_id)
+        if key not in self._lifecycles:
+            return self.load(plugin_id, device_id=device_id)
+        return self._lifecycles[key]
 
     def _sorted_lifecycle_ids(self) -> list[str]:
-        """Return lifecycle IDs sorted by plugin priority then name."""
+        """Return lifecycle instance keys sorted by plugin priority then name."""
 
-        def _sort_key(pid: str) -> tuple[int, str]:
-            lc = self._lifecycles[pid]
+        def _sort_key(key: str) -> tuple[int, str]:
+            lc = self._lifecycles[key]
             return (lc.metadata.priority, lc.metadata.name)
 
         return sorted(self._lifecycles, key=_sort_key)
 
-    def _get_or_create_context(self) -> GameContext:
-        """Create the game context if it does not exist yet."""
+    def _get_or_create_context(self, device_id: str | None = None) -> GameContext:
+        """Return the shared game context, or a per-device variant of it.
+
+        The underlying services (config, logger, event bus, DI
+        container) are created once and shared by every plugin
+        instance — only ``device_id`` varies between instances, via a
+        cheap :func:`dataclasses.replace` copy, so a device-bound
+        instance can tell which device it targets without needing its
+        own separate service wiring.
+        """
         if self._context is None:
             container = DependencyContainer()
             self._register_vision_services(container)
@@ -345,7 +418,9 @@ class PluginManager:
                 event_bus=self._event_bus or EventBus(logger=self._logger),
                 service_container=container,
             )
-        return self._context
+        if device_id is None:
+            return self._context
+        return dataclasses.replace(self._context, device_id=device_id)
 
     def _register_vision_services(self, container: DependencyContainer) -> None:
         """Register imaging and vision services in the DI container.

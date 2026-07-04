@@ -67,6 +67,41 @@ Use dependency injection, event bus and configuration-driven design.
   one `ApplicationManager` as a DI singleton (alongside `DeviceManager`), so every
   plugin resolves the same instance for free. See `games/shadow_fight_3/app.yaml` for a
   worked example and ADR-015 in `ARCHITECTURE_DECISIONS.md`.
+- **Capture Transport Layer** (`ugaf.vision.screenshot.ScreenshotProvider` and its
+  implementations): frame capture is decoupled from device control — ADB stays the
+  default transport for device discovery, input injection, application lifecycle, and
+  shell commands (never replaced), but *which frame source* feeds `VisionManager` is
+  independently pluggable, and `VisionManager`/`ScreenshotManager` never know which one
+  is active. Three providers ship: `ugaf.vision.adb_screenshot.AdbScreenshotProvider`
+  (the default — `adb exec-out screencap`), `ugaf.vision.window_capture.WindowCaptureProvider`
+  (captures a Windows emulator's window client area directly via `mss`/`pywin32` — an
+  optional dependency, `pip install ugaf[emulator]`), and
+  `ugaf.vision.scrcpy_capture.ScrcpyFrameProvider` (decodes a scrcpy server's H264
+  video stream via PyAV — optional, `pip install ugaf[scrcpy]`). Adding a fourth
+  provider means implementing `ScreenshotProvider`'s three `capture_*` methods and
+  registering it in `ugaf.vision.screenshot_registry` — no Vision or plugin code
+  changes. See ADR-016 in `ARCHITECTURE_DECISIONS.md`.
+- **Performance metrics** (`ugaf.core.metrics.MetricsTracker`): a single reusable
+  rolling-window timer used for every "how fast is this" question the platform needs —
+  `ScreenshotManager.metrics` (capture FPS/latency, any transport),
+  `VisionManager.processing_metrics` (template-matching time), and
+  `InputManager.metrics` (input round-trip latency). The web UI's "Performance" panel
+  and the `/api/devices/{id}/metrics` route surface these live so a user can compare
+  capture transports on equal footing instead of guessing.
+- **Multi-device automation scheduler** (`ugaf.plugins.manager.PluginManager`): every
+  lifecycle method (`initialize`/`start`/`pause`/`resume`/`stop`/`shutdown`/`health`)
+  accepts an optional `device_id`. Omitting it preserves the original one-instance-
+  per-plugin behaviour; passing a `device_id` creates (or reuses) a *separate* instance
+  of that same plugin class bound to that device, keyed internally as
+  `"{plugin_id}@{device_id}"` — so the same automation (e.g. `shadow_fight_3`) can run
+  concurrently against several physical devices or emulators at once, each with its own
+  `GameState`, its own combat-loop task, and its own logs. `GameContext.device_id`
+  carries which device a given instance targets; a plugin should prefer it over its own
+  config/`resolve_device()` fallback when set (see `games/shadow_fight_3/plugin.py`).
+  `initialize_all`/`start_all`/`stop_all` are fault-isolated per instance — one device's
+  automation crashing never stops another's. This is deliberately not a new subsystem:
+  it's the same `PluginLifecycle` dict `PluginManager` already had, with an optional
+  device suffix on the key. See ADR-017 in `ARCHITECTURE_DECISIONS.md`.
 - **Web control panel** (`ugaf.webapp`): a FastAPI backend + static HTML/JS frontend
   that lets a user detect devices, view the live screen, tap/swipe/type, and run
   automations from a browser with no code, no ADB commands, and no developer
@@ -77,6 +112,28 @@ Use dependency injection, event bus and configuration-driven design.
   pair per connected device, consistent with the multi-device design below. The frontend
   (`ugaf/webapp/static/`) has no build step (plain HTML/CSS/JS) but follows a real design
   system — see the "UI" note in `ugaf/webapp/static/style.css`'s design-token block.
+- **Emulator Manager** (`ugaf.emulator`): lets a user target an Android Emulator
+  instance instead of (or alongside) a physical device — a device becomes an ordinary
+  `adb` serial either way, so no other layer (input, vision, `ApplicationManager`,
+  `PluginManager`) needs emulator-specific code. `ugaf.emulator.provider.EmulatorProvider`
+  is the same ABC-plus-`AdapterRegistry` seam as `ScreenshotProvider`/`DeviceProvider`;
+  `ugaf.emulator.providers.android_studio.AndroidStudioProvider` (today's only
+  registered backend) drives the real `avdmanager`/`emulator`/`adb` command-line tools.
+  `ugaf.emulator.manager.EmulatorManager` is the single facade every caller uses —
+  `create`/`start`/`stop`/`list`/`delete`/`clone`/`rename`/`update_hardware`/
+  `is_running`/`detect_crash`/`wait_until_booted`/`install_apk`/`push`/`pull` — wiring
+  `ugaf.emulator.sdk_locator.AndroidSdkLocator` (finds the SDK from `ANDROID_HOME`/
+  `ANDROID_SDK_ROOT`/default install paths, never a hardcoded path),
+  `ugaf.emulator.profiles.DeviceProfileManager`/`ugaf.emulator.performance.PerformanceProfileManager`
+  (manufacturer/device and performance-preset libraries, loaded from
+  `config/manufacturers.yaml`/`config/performance_profiles.yaml` — never hardcoded in
+  Python), `ugaf.emulator.android_versions.AndroidVersionManager` (detects installed
+  system images and installs missing ones via `sdkmanager`, always live-queried, never
+  a static list), and `ugaf.emulator.hardware.HardwareDetector` (CPU/RAM/virtualization-
+  acceleration detection, recommends a performance preset). The web UI's "Connection
+  Type" toggle (Physical Device / Android Emulator) switches between the existing
+  Devices panel and a new Android Emulator panel wired to this subsystem. See ADR-018
+  in `ARCHITECTURE_DECISIONS.md`.
 
 ## Multi-device design (established Milestone 4)
 

@@ -1,0 +1,297 @@
+# Device profile library for the Emulator Manager (ugaf.emulator).
+#
+# Adding, removing, or editing a device here changes what UGAF's Android
+# Emulator UI offers -- no Python or PowerShell code change is needed.
+# Each entry becomes a ugaf.emulator.types.DeviceProfile.
+#
+# hardware_name is the avdmanager built-in device/skin profile closest to
+# the real device (run `avdmanager list device` to see the full list).
+manufacturers:
+  Google:
+    devices:
+      pixel_9:
+        brand: Google
+        model: Pixel 9
+        device_name: pixel_9
+        hardware_name: pixel_9
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1080, 2424]
+        dpi: 422
+        ram_mb: 4096
+        cpu_count: 4
+        storage_mb: 8192
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+      pixel_9_pro:
+        brand: Google
+        model: Pixel 9 Pro
+        device_name: pixel_9_pro
+        hardware_name: pixel_9_pro
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1280, 2856]
+        dpi: 495
+        ram_mb: 4096
+        cpu_count: 4
+        storage_mb: 8192
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+      pixel_9_pro_xl:
+        brand: Google
+        model: Pixel 9 Pro XL
+        device_name: pixel_9_pro_xl
+        hardware_name: pixel_9_pro_xl
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1344, 2992]
+        dpi: 486
+        ram_mb: 6144
+        cpu_count: 4
+        storage_mb: 8192
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+
+  Samsung:
+    devices:
+      galaxy_s24_ultra:
+        brand: Samsung
+        model: Galaxy S24 Ultra
+        device_name: galaxy_s24_ultra
+        hardware_name: medium_phone
+        android_version: "Android 14"
+        api_level: 34
+        resolution: [1440, 3120]
+        dpi: 501
+        ram_mb: 6144
+        cpu_count: 4
+        storage_mb: 8192
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+      galaxy_s25_ultra:
+        brand: Samsung
+        model: Galaxy S25 Ultra
+        device_name: galaxy_s25_ultra
+        hardware_name: medium_phone
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1440, 3120]
+        dpi: 501
+        ram_mb: 8192
+        cpu_count: 6
+        storage_mb: 12288
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+      galaxy_a56:
+        brand: Samsung
+        model: Galaxy A56
+        device_name: galaxy_a56
+        hardware_name: medium_phone
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1080, 2340]
+        dpi: 390
+        ram_mb: 2048
+        cpu_count: 2
+        storage_mb: 4096
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+
+  OnePlus:
+    devices:
+      oneplus_13:
+        brand: OnePlus
+        model: OnePlus 13
+        device_name: oneplus_13
+        hardware_name: medium_phone
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1440, 3168]
+        dpi: 510
+        ram_mb: 8192
+        cpu_count: 6
+        storage_mb: 12288
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+
+  Nothing:
+    devices:
+      phone_3:
+        brand: Nothing
+        model: "Phone (3)"
+        device_name: phone_3
+        hardware_name: medium_phone
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1260, 2800]
+        dpi: 460
+        ram_mb: 4096
+        cpu_count: 4
+        storage_mb: 8192
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+
+  Xiaomi:
+    devices:
+      xiaomi_15_ultra:
+        brand: Xiaomi
+        model: Xiaomi 15 Ultra
+        device_name: xiaomi_15_ultra
+        hardware_name: medium_phone
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1440, 3200]
+        dpi: 522
+        ram_mb: 8192
+        cpu_count: 6
+        storage_mb: 12288
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+      redmi_note_14_pro_plus:
+        brand: Redmi
+        model: Redmi Note 14 Pro+
+        device_name: redmi_note_14_pro_plus
+        hardware_name: medium_phone
+        android_version: "Android 14"
+        api_level: 34
+        resolution: [1220, 2712]
+        dpi: 446
+        ram_mb: 4096
+        cpu_count: 4
+        storage_mb: 8192
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+
+  OPPO:
+    devices:
+      find_x8_pro:
+        brand: OPPO
+        model: Find X8 Pro
+        device_name: find_x8_pro
+        hardware_name: medium_phone
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1272, 2820]
+        dpi: 450
+        ram_mb: 6144
+        cpu_count: 4
+        storage_mb: 8192
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+
+  vivo:
+    devices:
+      x200_pro:
+        brand: vivo
+        model: X200 Pro
+        device_name: x200_pro
+        hardware_name: medium_phone
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1440, 3168]
+        dpi: 452
+        ram_mb: 6144
+        cpu_count: 4
+        storage_mb: 8192
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+
+  Motorola:
+    devices:
+      edge_60_pro:
+        brand: Motorola
+        model: Edge 60 Pro
+        device_name: edge_60_pro
+        hardware_name: medium_phone
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1220, 2712]
+        dpi: 446
+        ram_mb: 4096
+        cpu_count: 4
+        storage_mb: 8192
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+
+  Sony:
+    devices:
+      xperia_1_vii:
+        brand: Sony
+        model: Xperia 1 VII
+        device_name: xperia_1_vii
+        hardware_name: medium_phone
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1080, 2340]
+        dpi: 397
+        ram_mb: 6144
+        cpu_count: 4
+        storage_mb: 8192
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+
+  ASUS:
+    devices:
+      rog_phone_9:
+        brand: ASUS
+        model: ROG Phone 9
+        device_name: rog_phone_9
+        hardware_name: medium_phone
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1080, 2448]
+        dpi: 396
+        ram_mb: 12288
+        cpu_count: 8
+        storage_mb: 16384
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true
+
+  HONOR:
+    devices:
+      magic_7_pro:
+        brand: HONOR
+        model: Magic 7 Pro
+        device_name: magic_7_pro
+        hardware_name: medium_phone
+        android_version: "Android 15"
+        api_level: 35
+        resolution: [1280, 2816]
+        dpi: 460
+        ram_mb: 6144
+        cpu_count: 4
+        storage_mb: 8192
+        abi: x86_64
+        gpu_mode: auto
+        play_store: true
+        snapshot_support: true

@@ -33,6 +33,20 @@
       <!-- ==================== Left sidebar ==================== -->
       <aside class="panel sidebar-left">
         <section class="panel-section">
+          <div class="section-header"><h2>Connection Type</h2></div>
+          <div class="connection-type-toggle" id="connection-type-toggle">
+            <label class="radio-label">
+              <input type="radio" name="connection-type" value="physical" id="conn-type-physical" checked />
+              Physical Device
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="connection-type" value="emulator" id="conn-type-emulator" />
+              Android Emulator
+            </label>
+          </div>
+        </section>
+
+        <section class="panel-section" id="devices-section">
           <div class="section-header">
             <h2>Devices</h2>
             <button id="refresh-devices" class="btn-icon-sm" aria-label="Refresh devices" title="Refresh devices">
@@ -40,6 +54,50 @@
             </button>
           </div>
           <ul id="device-list" class="device-list"></ul>
+        </section>
+
+        <section class="panel-section hidden" id="emulator-section">
+          <div class="section-header">
+            <h2>Android Emulator</h2>
+            <button id="refresh-emulators" class="btn-icon-sm" aria-label="Refresh emulators" title="Refresh emulators">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+          </div>
+
+          <div id="emulator-sdk-warning" class="banner-warning hidden"></div>
+
+          <div class="emulator-form">
+            <label class="field-label" for="emu-android-version">Android Version</label>
+            <select id="emu-android-version" class="select-field"></select>
+
+            <label class="field-label" for="emu-manufacturer">Manufacturer</label>
+            <select id="emu-manufacturer" class="select-field"></select>
+
+            <label class="field-label" for="emu-device">Device</label>
+            <select id="emu-device" class="select-field"></select>
+
+            <label class="field-label" for="emu-performance">Performance Profile</label>
+            <select id="emu-performance" class="select-field"></select>
+
+            <label class="field-label" for="emu-avd-name">New AVD Name</label>
+            <input type="text" id="emu-avd-name" class="text-field" placeholder="e.g. GalaxyS25Ultra_01" />
+
+            <label class="field-label" for="emu-avd-select">AVD</label>
+            <select id="emu-avd-select" class="select-field"></select>
+          </div>
+
+          <div class="emulator-actions">
+            <button id="emu-btn-create" class="btn btn-outline">Create</button>
+            <button id="emu-btn-start" class="btn btn-primary">Start</button>
+            <button id="emu-btn-stop" class="btn btn-danger-outline">Stop</button>
+            <button id="emu-btn-delete" class="btn btn-danger-outline">Delete</button>
+            <button id="emu-btn-studio" class="btn btn-outline">Open Android Studio</button>
+          </div>
+
+          <div id="emulator-status" class="status-banner">
+            <span class="banner-dot"></span>
+            <span id="emulator-status-text">No AVD selected</span>
+          </div>
         </section>
 
         <section class="panel-section">
@@ -66,6 +124,12 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2Z"/><circle cx="12" cy="13" r="4"/></svg>
             Capture
           </button>
+
+          <select id="capture-provider" class="btn btn-outline" title="Capture transport">
+            <option value="adb">ADB capture</option>
+            <option value="window">Window capture (emulator)</option>
+          </select>
+          <input type="text" id="window-title" class="hidden" placeholder="Emulator window title…" />
 
           <div class="viewer-toolbar-spacer"></div>
 
@@ -110,6 +174,13 @@
           <div class="section-header"><h2>Device Info</h2></div>
           <dl id="device-info" class="info-grid">
             <dt>Status</dt><dd>No device selected</dd>
+          </dl>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-header"><h2>Performance</h2></div>
+          <dl id="metrics-info" class="info-grid">
+            <dt>Capture FPS</dt><dd>—</dd>
           </dl>
         </section>
 

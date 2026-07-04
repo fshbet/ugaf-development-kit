@@ -1,0 +1,18 @@
+# API level -> marketing version name reference, for human-readable
+# labels only (e.g. "Android 15 (API 35)"). This mapping barely changes
+# and is reference data, not a hardcoded device/emulator list -- the
+# actual set of *installed* system images is always detected live by
+# ugaf.emulator.android_versions.AndroidVersionManager via `sdkmanager
+# --list`, never read from this file.
+versions:
+  36: "Android 16"
+  35: "Android 15"
+  34: "Android 14"
+  33: "Android 13"
+  32: "Android 12L"
+  31: "Android 12"
+  30: "Android 11"
+  29: "Android 10"
+  28: "Android 9"
+  27: "Android 8.1"
+  26: "Android 8.0"

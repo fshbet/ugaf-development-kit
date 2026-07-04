@@ -27,6 +27,14 @@ class GameContext:
         logger: Structured logger instance.
         event_bus: Async publish/subscribe event bus.
         service_container: Dependency injection container.
+        device_id: The specific device this plugin *instance* targets,
+            when the plugin is one of several concurrent instances of
+            the same automation bound to different devices (see
+            :class:`~ugaf.plugins.manager.PluginManager`'s
+            ``device_id``-parametrized methods). ``None`` for a
+            single-instance plugin, in which case it should fall back
+            to its own device-resolution logic (e.g. config, or
+            ``DeviceManager.resolve_device()``).
         extra: Extension dictionary for additional services.
 
     """
@@ -35,4 +43,5 @@ class GameContext:
     logger: Logger | None = None
     event_bus: EventBus | None = None
     service_container: DependencyContainer | None = None
+    device_id: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)

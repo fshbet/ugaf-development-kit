@@ -691,3 +691,263 @@ without per-app Python.
   the same category of risk `AdbDeviceProvider`'s device-state parsing already carries,
   documented rather than solved (mirrors existing project precedent of treating
   device/OS quirks as documented constraints, not framework bugs).
+
+---
+
+## ADR-016: Decouple frame capture from device control via `ScreenshotProvider`
+
+- **Status**: Accepted
+- **Date**: 2026-07-03
+
+### Context
+
+`AdbScreenshotProvider`'s `adb exec-out screencap` round trip is slow (measured live:
+~2.5s per frame on real hardware — see `PROJECT_STATUS.md`), and is the only frame
+source UGAF has. The performance directive requires reducing capture latency and
+supporting Windows Android emulators as first-class targets, *without* replacing ADB —
+ADB must remain the transport for device discovery, input injection, application
+lifecycle, and shell commands.
+
+### Decision
+
+No new abstraction was needed: `ugaf.vision.screenshot.ScreenshotProvider` (present
+since Milestone 2) already *is* the capture transport seam — `VisionManager`/
+`ScreenshotManager` consume it without knowing which concrete provider is behind it.
+This ADR formalizes that seam as the answer to "how do we add faster capture
+transports" and adds two new implementations against it:
+
+- `ugaf.vision.window_capture.WindowCaptureProvider` — captures a named window's
+  client area directly via `mss`+`pywin32` (optional deps, `ugaf[emulator]`), for
+  Android emulators that run as ordinary Windows windows (BlueStacks, NoxPlayer,
+  Android Studio's emulator, ...). Bypasses ADB entirely for the frame source; ADB is
+  untouched for everything else.
+- `ugaf.vision.scrcpy_capture.ScrcpyFrameProvider` — pushes and talks to a scrcpy
+  server process over its raw H264 video socket, decoding with PyAV (optional dep,
+  `ugaf[scrcpy]`), instead of one ADB round trip per frame.
+
+Neither new module imports its optional dependency at module level — `import
+ugaf.vision` never fails even with neither installed; only actually calling
+`capture_full()` on an unconfigured provider raises a clear, actionable
+`ScreenshotError`.
+
+### Consequences
+
+- Positive: `AdbScreenshotProvider` is completely unchanged and remains the default —
+  zero regression risk for existing automations.
+- Positive: adding a capture transport is "implement three methods + register a
+  string" — no `VisionManager`, `ScreenshotManager`, or plugin code changes, verified
+  by both new providers dropping into the same `screenshot_registry.register(...)`
+  pattern `AdbScreenshotProvider`/`MockScreenshotProvider` already use.
+- Positive: `WindowCaptureProvider` was validated against a real Windows window (a live
+  Notepad instance) in this environment, proving the capture mechanism genuinely works;
+  full unit coverage mocks `win32gui`/`mss` via `sys.modules` injection for the rest.
+- Negative (documented, not solved): neither `scrcpy` nor an Android emulator was
+  available in the development environment (no `scrcpy` binary, no BlueStacks/NoxPlayer/
+  AVD running, and `pywin32`/`mss`/`av` have no published wheel for the Python 3.14
+  interpreter used here — confirmed via `pip install` producing cp310-tagged wheels
+  that fail to import). `ScrcpyFrameProvider`'s wire-protocol parsing (device-name
+  header, frame-meta framing, PyAV decode call) is covered by unit tests against
+  synthetic byte streams built to the documented scrcpy protocol spec, but has **not**
+  been validated against a real scrcpy server end-to-end. This is a known, flagged gap
+  (see `PROJECT_STATUS.md`), not a silent one — matching the project's standing policy
+  of documenting environment constraints rather than pretending they don't exist.
+
+---
+
+## ADR-017: `device_id`-parametrized `PluginManager` for concurrent multi-device automation
+
+- **Status**: Accepted
+- **Date**: 2026-07-03
+
+### Context
+
+Every plugin lifecycle method (`start`, `stop`, `health`, ...) took only a `plugin_id`,
+and `PluginManager._lifecycles` was keyed by `plugin_id` alone — one instance per
+plugin, framework-wide. Running the same automation against two devices concurrently
+was impossible: initializing a second time just returned the same `PluginLifecycle`.
+The performance/scalability directive requires "multiple automations running
+concurrently on different devices," each with independent state, independent logs, and
+fault isolation (one device's failure must not stop another's).
+
+### Decision
+
+Every `PluginManager` lifecycle method gained an optional `device_id: str | None =
+None` parameter. The internal lifecycle dict key becomes `plugin_id` when `device_id`
+is omitted (byte-for-byte the original behaviour — every existing caller, test, and
+plugin needed zero changes) or `"{plugin_id}@{device_id}"` when given, which
+constructs (or reuses) a **separate** `PluginLifecycle` wrapping a **separate**
+`GamePlugin` instance. `GameContext` gained a `device_id: str | None` field;
+`PluginManager._get_or_create_context(device_id=...)` returns a cheap
+`dataclasses.replace()` copy of the one shared context (same DI container, same
+`DeviceManager`/`ApplicationManager` singletons) carrying just that instance's
+`device_id`. `games/shadow_fight_3/plugin.py` was updated to prefer
+`context.device_id` over its own config/`resolve_device()` fallback when set — the
+minimal change needed for the *existing* plugin to become multi-instance-capable, with
+no new per-plugin infrastructure.
+
+`initialize_all`/`start_all`/`stop_all`/`pause_all`/`resume_all`/`shutdown_all` iterate
+every lifecycle instance regardless of key shape; `stop_all` was additionally made
+fault-isolated (catch-log-continue per instance, mirroring `start_all`'s existing
+pattern) since a multi-device stop-everything action must not abandon devices whose
+stop happens to come after a failing one in iteration order.
+
+This was deliberately *not* built as a new scheduler/orchestrator class — the existing
+`PluginLifecycle` dict, `GamePlugin` contract, and `GameState` machine were sufficient
+once given a composite key and a per-instance context field.
+
+### Consequences
+
+- Positive: fully backward compatible — the entire pre-existing test suite (all
+  `manager.start("id")`-style calls) passed unmodified; only *new* tests needed to add
+  `device_id=...`.
+- Positive: validated with both a generic dummy plugin
+  (`tests/test_plugin_manager_multidevice.py`) and the real `ShadowFight3Game`
+  (`tests/test_shadow_fight_3_plugin.py::test_two_concurrent_device_bound_instances_run_independently`)
+  running two instances concurrently via `asyncio.gather`, each tapping its own
+  mocked device, each reporting independent `cycles_run` in its health dict — and a
+  dedicated fault-isolation test proving one instance's `start()`/`stop()` failure
+  (`GameState.ERROR`) leaves a sibling instance's state (`GameState.RUNNING`/
+  `STOPPED`) untouched.
+- Negative: only one physical Android device was available in this environment, so the
+  *true* multi-device claim (two distinct physical/emulator devices automated at once)
+  is proven by the mocked-device integration tests above, not an end-to-end live demo
+  with two real targets. The single-device parts of the workflow (device resolution,
+  the startup workflow, capture/input against that one device) were validated live —
+  see `PROJECT_STATUS.md`.
+- Negative: the web UI surfaces this by scoping the currently-selected device's
+  automation card to that device's instance (`?device_id=...` on run/stop/health) —
+  a user with two devices connected sees each device's own automation status by
+  selecting it, rather than a dedicated "all instances at once" dashboard view. Judged
+  sufficient for this milestone; a multi-instance-at-a-glance view is a UI-only
+  follow-up, not an architecture gap.
+
+---
+
+## ADR-018: `ugaf.emulator` Emulator Manager Module, as a provider-based subsystem alongside `DeviceManager`
+
+- **Status**: Accepted
+- **Date**: 2026-07-04
+
+### Context
+
+Every prior milestone assumed a physical Android device connected over ADB. The
+platform directive requires a first-class **Android Emulator** option: the user picks
+"Physical Device" or "Android Emulator" in the web UI, and in the emulator case can
+browse manufacturer/device profiles (Samsung Galaxy S25 Ultra, Google Pixel 9, ...),
+pick a performance preset (Low End/Mid Range/Flagship/Gaming), and create/start/stop/
+delete AVDs — all without hand-editing `avdmanager`/`emulator` command lines. The
+device/profile library must be data (YAML), not Python, and the design must leave room
+for future non-Android-Studio backends (BlueStacks, LDPlayer, Genymotion, ...) without
+touching this milestone's code.
+
+This environment happens to have a real, working Android SDK installed
+(`sdkmanager`/`avdmanager`/`emulator`, real AVDs, WHPX hardware acceleration usable) —
+unlike the scrcpy/emulator gap noted in ADR-016, the bulk of this module could be
+live-validated against real tooling, not only mocks.
+
+### Decision
+
+`ugaf.emulator` mirrors the exact pattern already proven twice (`ScreenshotProvider`/
+`AdapterRegistry` in ADR-016, `DeviceProvider`/`DeviceManager` from Milestone 3):
+
+- **`EmulatorProvider`** (`ugaf/emulator/provider.py`) — an ABC with the full lifecycle
+  contract (`list`/`create`/`delete`/`rename`/`clone`/`update_hardware`/`start`/`stop`/
+  `is_running`/`detect_crash`/`wait_until_booted`/`install_apk`/`push`/`pull`),
+  registered in an `AdapterRegistry[EmulatorProvider]` under a string name. Only
+  `AndroidStudioProvider` (`ugaf/emulator/providers/android_studio.py`) is registered
+  today, driving the real `avdmanager`/`emulator`/`adb` binaries via `subprocess`
+  exactly like `AdbDeviceProvider` does for device enumeration. A future
+  BlueStacks/LDPlayer/Genymotion/Waydroid provider is a new class + one
+  `emulator_registry.register(...)` call — no change to `EmulatorManager`, the webapp,
+  or any existing provider.
+- **`EmulatorManager`** (`ugaf/emulator/manager.py`) — the single facade every caller
+  uses (mirrors `ApplicationManager` from ADR-015): resolves the SDK once via
+  `AndroidSdkLocator`, wires `DeviceProfileManager`/`PerformanceProfileManager`/
+  `AndroidVersionManager`/`HardwareDetector`, and delegates every lifecycle call to
+  whichever provider is configured. Nothing above this facade ever imports
+  `AndroidStudioProvider` directly.
+- **Data-driven device/performance libraries**: `DeviceProfile`
+  (`ugaf/emulator/types.py`) loaded from `config/manufacturers.yaml` by
+  `DeviceProfileManager`, and `PerformanceProfile` loaded from
+  `config/performance_profiles.yaml` by `PerformanceProfileManager` — both follow
+  `AppDefinition.load()`'s dataclass-plus-YAML pattern (ADR precedent: apps/types.py).
+  Adding a manufacturer/device or a performance preset is a YAML edit; no Python or
+  PowerShell hardcodes a device list, matching the directive's explicit requirement.
+  `config/android_versions.yaml` is deliberately *not* a device list — it is a static
+  API-level-to-marketing-name reference (e.g. `35: "Android 15"`), used only for
+  display; the actual set of installed/available system images is always detected live
+  via `AndroidVersionManager` parsing real `sdkmanager --list` output, never read from
+  a static file.
+- **`AndroidSdkLocator`** (`ugaf/emulator/sdk_locator.py`) resolves the SDK root from
+  an explicit override, then `ANDROID_HOME`/`ANDROID_SDK_ROOT`, then per-OS default
+  install locations — never a hardcoded path. It prefers `adb`/`emulator`/
+  `sdkmanager`/`avdmanager` from *within* the resolved SDK root over whatever happens
+  to be first on `PATH`: a real audit of this project's development machine found
+  *two* installed `adb.exe` copies (one under the SDK, one under
+  `C:\Program Files\Adb`), which a PATH-first lookup would have silently preferred,
+  potentially the wrong version for the resolved SDK's tooling.
+- **`HardwareDetector`** (`ugaf/emulator/hardware.py`) reports CPU count, total RAM, and
+  real acceleration status (parses `emulator -accel-check`, e.g. `"WHPX(10.0.26200) is
+  installed and usable"`), and recommends a performance preset from detected headroom
+  (reserving roughly half of CPU/RAM for the host) — stdlib/subprocess only, no new
+  dependency (e.g. `psutil`) for what is a handful of one-shot lookups.
+- **Multi-instance launches**: `AndroidStudioProvider.start()` allocates the next free
+  console port (starting at `emulator_settings.yaml`'s `first_console_port`, default
+  `5554`, stepping by 2 per the emulator's own port-pairing convention), cross-checking
+  both its own tracked instances *and* `adb devices` so externally-started emulators
+  don't collide with a UGAF-launched one. Each instance gets its own working directory
+  and log file under `~/.ugaf/emulator_instances/<name>_<port>/`.
+- **Webapp integration**: a new "Connection Type" radio (Physical Device / Android
+  Emulator) in the left sidebar toggles between the existing Devices panel and a new
+  Android Emulator panel (Android Version / Manufacturer / Device / Performance
+  Profile / AVD dropdowns, Create/Start/Stop/Delete/Open Android Studio/Refresh
+  buttons) — `AppSession` lazily constructs one `EmulatorManager` on first use
+  (`SdkNotFoundError` surfaces as a dismissible banner, not a crash, so the rest of the
+  control panel works on a machine with no SDK installed at all), and every new
+  `/api/emulator/*` route is a thin delegation, matching every existing route in
+  `ugaf/webapp/server.py`.
+
+### Consequences
+
+- Positive: the entire subsystem was live-validated against this machine's real
+  Android SDK, not only mocks — real `sdkmanager --list`/`avdmanager list avd`
+  parsing, real AVD create/start/is_running/detect_crash/stop/delete cycles, real
+  hardware detection (16 CPUs, ~31GB RAM, WHPX usable), and real webapp UI wiring
+  (Connection Type toggle to live manufacturer/device/performance/AVD dropdowns,
+  populated from this machine's actual catalog) confirmed via the browser preview
+  tools. Two bugs were caught specifically *because* real tooling was used instead of
+  hand-written fixtures: (1) `sdkmanager --list` repeats every already-installed
+  package under "Available Packages" too, which a naive dict-building parser let
+  silently overwrite the correct `installed=True` record with a stale `installed=False`
+  duplicate; (2) sorting `cmdline-tools` version directories as plain strings ranked
+  `"9.0"` above `"12.0"`, silently preferring an older command-line-tools install. Both
+  are fixed and covered by regression tests built from the real captured output.
+- Positive: this machine's real `avdmanager list avd` surfaced a genuine environment
+  edge case worth handling deliberately rather than treating as a framework bug: of 4
+  AVDs reported by `emulator -list-avds`, only one (`PixelPlay`) was actually valid —
+  two had unparseable `config.ini` files, one referenced a system image tag
+  (`google_apis`) that wasn't the one actually installed (`google_apis_playstore`).
+  `EmulatorManager.list()`/`AndroidStudioProvider.list()` surface both valid and broken
+  AVDs with their error reasons rather than silently hiding or crashing on the broken
+  ones — the same "surface the real state" principle `ARCHITECTURE.md` documents for
+  physical-device quirks now applies to emulators too.
+- Negative (documented, not solved): booting a freshly created AVD to
+  `sys.boot_completed=1` did not finish within the default 180s timeout in this
+  environment when using software rendering (`gpu_mode=swiftshader_indirect`) on a
+  cold boot with no snapshot — the `emulator` process itself stalled at graphics
+  backend initialization (`gfxstream`) for several minutes, a real host/driver
+  characteristic of this machine's environment, not a bug in `wait_until_booted`'s
+  polling logic (which correctly returned `False` at the timeout without raising, and
+  correctly reported the process as still alive via `detect_crash`). The full AVD
+  lifecycle *up to* boot completion — create, start, `is_running`, `detect_crash`,
+  stop, delete — was validated live end-to-end; only the boot-completion wait itself
+  needs a longer timeout (or hardware GPU mode) on this specific host to observe a
+  `True` result. Users should expect first boots (especially without snapshots or with
+  software rendering) to take several minutes and configure
+  `emulator_settings.yaml`'s `boot_timeout_seconds` accordingly.
+- Negative: "Open Android Studio" only checks a few well-known Windows install paths
+  (`%LOCALAPPDATA%\Programs\Android Studio\...`, `Program Files\Android\...`) plus
+  `PATH` on other platforms; a non-standard Android Studio install location will report
+  "not found" rather than launching. Judged acceptable as a convenience button, not a
+  load-bearing part of the emulator lifecycle (every AVD operation works from the web
+  UI without ever opening Android Studio itself).

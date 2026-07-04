@@ -105,8 +105,15 @@ class ShadowFight3Game(GamePlugin):
         device_manager = container.resolve(DeviceManager)
         app_manager = container.resolve(ApplicationManager)
         self._app_manager = app_manager
-        configured_device = self._config.get("input.adb.default_device")
-        device_id = device_manager.resolve_device(configured=configured_device)
+        # A device-bound instance (see PluginManager's device_id-parametrized
+        # methods, for running this same automation concurrently on several
+        # devices) already knows which device it targets — only fall back to
+        # config/"the sole online device" for a plain single-instance run.
+        if self._context.device_id is not None:
+            device_id = self._context.device_id
+        else:
+            configured_device = self._config.get("input.adb.default_device")
+            device_id = device_manager.resolve_device(configured=configured_device)
         self._device_id = device_id
 
         logger.info("shadow_fight_3.launching", device=device_id, package=self._app.package)

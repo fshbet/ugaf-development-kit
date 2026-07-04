@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ugaf.core.logger import Logger, get_logger
+from ugaf.core.metrics import MetricsSnapshot, MetricsTracker
 from ugaf.imaging.image import Image
 from ugaf.imaging.manager import ImagingManager
 from ugaf.platform.registry import AdapterRegistry
@@ -96,6 +97,7 @@ class ScreenshotManager(ScreenshotProvider):
         self._cached_frame: Image | None = None
         self._cached_at: float = 0.0
         self._last_capture_error: Exception | None = None
+        self._metrics = MetricsTracker()
 
     @property
     def provider(self) -> ScreenshotProvider | None:
@@ -111,6 +113,18 @@ class ScreenshotManager(ScreenshotProvider):
         :meth:`capture_full` itself.
         """
         return self._last_capture_error
+
+    @property
+    def metrics(self) -> MetricsSnapshot:
+        """Return capture performance metrics (FPS, latency) for the current provider.
+
+        Measures wall-clock time for each real (non-cache-hit) capture,
+        over a rolling window — the same number regardless of which
+        :class:`~ugaf.vision.screenshot.ScreenshotProvider` is
+        connected, so callers (and the web UI) can compare ADB,
+        scrcpy, and window-capture transports on equal footing.
+        """
+        return self._metrics.snapshot()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -237,7 +251,8 @@ class ScreenshotManager(ScreenshotProvider):
         last_exc: Exception | None = None
         for attempt in range(1, self._retry_count + 1):
             try:
-                return action(self._provider)
+                with self._metrics.measure():
+                    return action(self._provider)
             except ScreenshotError as exc:
                 last_exc = exc
                 self._last_capture_error = exc

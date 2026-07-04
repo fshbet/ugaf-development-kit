@@ -212,3 +212,78 @@ async def test_start_raises_and_never_connects_input_when_app_launch_fails(
         assert connect_calls == []
     finally:
         await app.stop()
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_device_bound_instances_run_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same automation runs on two devices at once, each with its own state.
+
+    Exercises PluginManager's device_id-parametrized lifecycle against
+    the real ShadowFight3Game (not a dummy plugin, unlike
+    test_plugin_manager_multidevice.py's generic coverage) — the
+    plugin's own device resolution must prefer the per-instance
+    context.device_id over its config/resolve_device() fallback.
+    """
+    clicks: dict[str, list[tuple[int, int]]] = {"deviceA": [], "deviceB": []}
+    connected_devices: list[str] = []
+
+    def fake_connect(self: InputManager) -> None:  # type: ignore[no-untyped-def]
+        self._screen_size = _SCREEN_SIZE
+        connected_devices.append(self._device_id)
+
+    def fake_click(self: InputManager, x: int, y: int, button: str = "left") -> None:  # type: ignore[no-untyped-def]
+        assert self._device_id is not None
+        clicks[self._device_id].append((x, y))
+
+    monkeypatch.setattr(InputManager, "connect", fake_connect)
+    monkeypatch.setattr(InputManager, "click", fake_click)
+    monkeypatch.setattr(InputManager, "disconnect", lambda self: None)  # type: ignore[misc]
+    _stub_successful_launch(monkeypatch)
+
+    app = Application(config_path=Path("config/default.yaml"), games_dir=Path("games"))
+    await app.initialize()
+    await app.start(auto_start_plugins=False)
+    manager = app.plugin_manager
+    assert manager is not None
+
+    try:
+        await manager.initialize("shadow_fight_3", device_id="deviceA")
+        await manager.initialize("shadow_fight_3", device_id="deviceB")
+
+        game_a = manager.lifecycles["shadow_fight_3@deviceA"].plugin
+        game_b = manager.lifecycles["shadow_fight_3@deviceB"].plugin
+        assert game_a is not game_b
+
+        await asyncio.gather(
+            manager.start("shadow_fight_3", device_id="deviceA"),
+            manager.start("shadow_fight_3", device_id="deviceB"),
+        )
+        assert sorted(connected_devices) == ["deviceA", "deviceB"]
+
+        assert manager.lifecycles["shadow_fight_3@deviceA"].plugin._strategy_engine is not None
+        assert manager.lifecycles["shadow_fight_3@deviceB"].plugin._strategy_engine is not None
+        for key in ("shadow_fight_3@deviceA", "shadow_fight_3@deviceB"):
+            manager.lifecycles[key].plugin._strategy_engine._strategy.cycle_interval = 0.01
+
+        await asyncio.sleep(0.3)
+
+        health_a = await manager.health("shadow_fight_3", device_id="deviceA")
+        health_b = await manager.health("shadow_fight_3", device_id="deviceB")
+        assert health_a["status"] == "running"
+        assert health_b["status"] == "running"
+        assert health_a["cycles_run"] > 0
+        assert health_b["cycles_run"] > 0
+        # Each instance really did tap its own device, not the other's.
+        assert len(clicks["deviceA"]) > 0
+        assert len(clicks["deviceB"]) > 0
+
+        await asyncio.gather(
+            manager.stop("shadow_fight_3", device_id="deviceA"),
+            manager.stop("shadow_fight_3", device_id="deviceB"),
+        )
+        assert (await manager.health("shadow_fight_3", device_id="deviceA"))["status"] == "stopped"
+        assert (await manager.health("shadow_fight_3", device_id="deviceB"))["status"] == "stopped"
+    finally:
+        await app.stop()

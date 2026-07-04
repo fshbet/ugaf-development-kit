@@ -136,6 +136,104 @@ normal use.
 See ADR-015 in `ARCHITECTURE_DECISIONS.md` for the full Application Manager design,
 and `ARCHITECTURE.md`'s "Startup workflow" section for the execution sequence.
 
+## High-performance capture + multi-device architecture (2026-07-03)
+
+Goal: reduce capture latency and support automating multiple physical devices and
+Windows emulators at once, without replacing ADB (still the transport for device
+control, input, app lifecycle, and shell commands — only the *frame source* is now
+pluggable).
+
+- [x] `ugaf.core.metrics.MetricsTracker` — reusable FPS/latency primitive, wired into
+      capture (`ScreenshotManager.metrics`), vision processing
+      (`VisionManager.processing_metrics`), and input (`InputManager.metrics`).
+      **Validated on real hardware**: `/api/devices/{id}/metrics` and the web UI's
+      Performance panel showed real live numbers — ~2.5s ADB capture latency, ~0.2
+      FPS, ~164ms input latency — not placeholders.
+- [x] `ugaf.vision.window_capture.WindowCaptureProvider` — captures a Windows
+      emulator's window directly (`mss`+`pywin32`, optional `ugaf[emulator]`).
+      **Validated against a real window** (Notepad) once the optional deps were
+      installed in a compatible environment; full unit coverage otherwise.
+- [x] `ugaf.vision.scrcpy_capture.ScrcpyFrameProvider` — decodes a scrcpy server's raw
+      H264 stream via PyAV (optional `ugaf[scrcpy]`) instead of one ADB round trip per
+      frame. Protocol-correct implementation, unit-tested against synthetic byte
+      streams. **Not validated against a live scrcpy server** — neither `scrcpy` nor
+      an Android emulator was available in this environment, and `pywin32`/`mss`/`av`
+      currently have no published wheel for the Python 3.14 interpreter used here
+      (confirmed via `pip install` resolving incompatible cp310 wheels). Documented,
+      flagged gap — see ADR-016.
+- [x] Multi-device concurrent automation — `PluginManager`'s lifecycle methods accept
+      an optional `device_id`, letting the same automation run as independent
+      concurrent instances (one per device), each with its own state/logs, fault
+      isolated. Fully backward compatible. **Validated with real integration tests**:
+      two concurrent `ShadowFight3Game` instances via `asyncio.gather`, independent
+      `cycles_run`, and a dedicated test proving one instance's failure leaves the
+      other's `GameState` untouched. Only one physical device was available in this
+      environment, so the *true* two-physical-device claim rests on these
+      mocked-device tests rather than a live two-device demo — see ADR-017.
+- [x] Web UI: capture-provider selector (ADB/window) on connect, live Performance
+      panel, and device-scoped automation Start/Stop/status.
+
+See ADR-016 and ADR-017 in `ARCHITECTURE_DECISIONS.md` for the full designs, including
+honest validation-gap writeups for the two hardware/tooling-gated capabilities.
+
+## Emulator Manager Module (2026-07-04)
+
+Goal: let a user target an Android Emulator instance instead of (or alongside) a
+physical device, with manufacturer/device profiles and performance presets fully
+data-driven (no hardcoded devices in Python or PowerShell), and an architecture that
+leaves room for future non-Android-Studio emulator backends.
+
+- [x] `ugaf.emulator.sdk_locator.AndroidSdkLocator` — finds the Android SDK from an
+      explicit override, `ANDROID_HOME`/`ANDROID_SDK_ROOT`, or default per-OS install
+      paths; resolves `adb`/`emulator`/`sdkmanager`/`avdmanager` from *within* that SDK
+      root rather than trusting `PATH` first. **Validated on real hardware**: this
+      development machine has a real SDK at `E:\Android\SDK` with *two* installed
+      `adb.exe` copies — the locator correctly prefers the SDK's own copy.
+- [x] `ugaf.emulator.hardware.HardwareDetector` — CPU/RAM/virtualization-acceleration
+      detection and a performance-preset recommendation. **Validated on real
+      hardware**: correctly detected 16 CPUs, ~31GB RAM, and WHPX acceleration
+      ("usable") on this machine, recommending the "gaming" preset.
+- [x] `ugaf.emulator.profiles.DeviceProfileManager` /
+      `ugaf.emulator.performance.PerformanceProfileManager` — full manufacturer/device
+      library (Google, Samsung, OnePlus, Nothing, Xiaomi, OPPO, vivo, Motorola, Sony,
+      ASUS, HONOR) and performance presets (Low End/Mid Range/Flagship/Gaming/Custom),
+      loaded entirely from `config/manufacturers.yaml`/`config/performance_profiles.yaml`.
+- [x] `ugaf.emulator.android_versions.AndroidVersionManager` — detects installed system
+      images and installs missing ones via `sdkmanager`, always live-queried (never a
+      static list). **Validated on real hardware**: correctly parsed this machine's
+      real `sdkmanager --list` output (239 catalog images, exactly 1 correctly
+      identified as installed) — a real parsing bug (duplicate catalog entries
+      overwriting the installed record) was caught and fixed this way, not by a
+      hand-written fixture.
+- [x] `ugaf.emulator.providers.android_studio.AndroidStudioProvider` +
+      `ugaf.emulator.manager.EmulatorManager` — the full AVD lifecycle (create, start,
+      stop, list, delete, clone, rename, update hardware, is-running, crash detection,
+      boot-wait, install APK, push, pull). **Validated on real hardware**: a real AVD
+      was created, started, confirmed running, stopped, and deleted end-to-end against
+      this machine's real SDK; this machine's real `avdmanager list avd` also surfaced
+      a genuine edge case (3 of 4 pre-existing AVDs were broken — bad `config.ini` or a
+      missing system image) that `list()` now surfaces with error reasons instead of
+      hiding or crashing.
+- [x] Web UI: "Connection Type" radio (Physical Device / Android Emulator) toggles a
+      new Android Emulator panel (Android Version / Manufacturer / Device /
+      Performance Profile / AVD dropdowns, Create/Start/Stop/Delete/Open Android
+      Studio/Refresh) — **validated live in the browser preview**: manufacturer
+      selection correctly re-populates the device dropdown, the Android Version
+      dropdown correctly pre-selects this machine's one installed image, and the AVD
+      dropdown correctly lists real (and broken) AVDs from this machine.
+- [~] Boot-completion wait: `wait_until_booted()`'s polling logic is correct (verified
+      it returns `False` without raising at timeout, and correctly reports the process
+      as still alive), but a freshly created AVD did not finish booting to
+      `sys.boot_completed=1` within the default 180s timeout on this machine using
+      software rendering on a cold boot — a real host/driver characteristic (the
+      `emulator` process stalled at `gfxstream` graphics backend init), not a bug in
+      the polling code. See ADR-018 for the full writeup and the config knob
+      (`emulator_settings.yaml`'s `boot_timeout_seconds`) to work around it.
+
+See ADR-018 in `ARCHITECTURE_DECISIONS.md` for the full design, including both bugs
+this real-environment validation caught (sdkmanager catalog-duplicate parsing,
+cmdline-tools version-string sorting) and the honest boot-timing gap above.
+
 ---
 
 # Source-Verified Audit (historical)

@@ -1,0 +1,47 @@
+# Performance presets for the Emulator Manager (ugaf.emulator).
+#
+# "custom" is a starting point only -- the UI/SDK caller is expected to
+# override its fields (ram_mb, cpu_count, heap_mb, storage_mb,
+# resolution, gpu_mode, network_speed, snapshot_enabled) rather than use
+# it verbatim.
+profiles:
+  low_end:
+    cpu_count: 2
+    ram_mb: 2048
+    heap_mb: 128
+    storage_mb: 4096
+    gpu_mode: swiftshader_indirect
+    network_speed: full
+    snapshot_enabled: false
+  mid_range:
+    cpu_count: 4
+    ram_mb: 4096
+    heap_mb: 256
+    storage_mb: 8192
+    gpu_mode: auto
+    network_speed: full
+    snapshot_enabled: true
+  flagship:
+    cpu_count: 6
+    ram_mb: 8192
+    heap_mb: 512
+    storage_mb: 12288
+    gpu_mode: auto
+    network_speed: full
+    snapshot_enabled: true
+  gaming:
+    cpu_count: 8
+    ram_mb: 12288
+    heap_mb: 1024
+    storage_mb: 16384
+    gpu_mode: host
+    network_speed: full
+    snapshot_enabled: true
+  custom:
+    cpu_count: 4
+    ram_mb: 4096
+    heap_mb: 256
+    storage_mb: 8192
+    gpu_mode: auto
+    network_speed: full
+    snapshot_enabled: true

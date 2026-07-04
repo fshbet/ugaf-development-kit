@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from ugaf.core.config import Config
 from ugaf.core.logger import Logger, get_logger
+from ugaf.core.metrics import MetricsSnapshot, MetricsTracker
 from ugaf.core.platform import detect_platform
 from ugaf.input.exceptions import (
     ConnectionFailedError,
@@ -127,6 +128,7 @@ class InputManager:
         self._screen_size: tuple[int, int] | None = None
         self._device_id = device_id
         self._device_manager = device_manager
+        self._metrics = MetricsTracker()
 
     @property
     def provider(self) -> InputProvider | None:
@@ -137,6 +139,16 @@ class InputManager:
     def screen_size(self) -> tuple[int, int] | None:
         """Return the detected screen resolution."""
         return self._screen_size
+
+    @property
+    def metrics(self) -> MetricsSnapshot:
+        """Return input latency metrics (rolling window) for this device/target.
+
+        Measures wall-clock time for each provider call (click, drag,
+        type_text, ...) — the round trip of actually injecting the
+        input, not just the Python call overhead.
+        """
+        return self._metrics.snapshot()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -439,4 +451,5 @@ class InputManager:
         if self._dry_run:
             self._logger.info("input.dry_run", action=str(action))
             return None
-        return action(self._provider)
+        with self._metrics.measure():
+            return action(self._provider)

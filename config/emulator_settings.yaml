@@ -1,0 +1,9 @@
+# Emulator Manager defaults (ugaf.emulator).
+emulator:
+  default_provider: android_studio
+  default_performance_profile: mid_range
+  boot_timeout_seconds: 180
+  boot_poll_interval_seconds: 2.0
+  first_console_port: 5554
+  max_concurrent_instances: 8
+  sdk_root: null # null = auto-detect (ANDROID_HOME / ANDROID_SDK_ROOT / default install path)

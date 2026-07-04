@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ugaf.core.metrics import MetricsSnapshot, MetricsTracker
 from ugaf.imaging.image import Image
 from ugaf.imaging.manager import ImagingManager
 from ugaf.vision.color import Color
@@ -98,6 +99,18 @@ class VisionManager(VisionProvider):
         )
         self._detector = FeatureDetector()
         self._ocr = OCRProvider()
+        self._processing_metrics = MetricsTracker()
+
+    @property
+    def processing_metrics(self) -> MetricsSnapshot:
+        """Return frame-processing time metrics (rolling window).
+
+        Measures wall-clock time spent in template matching — the
+        "how long does it take to make sense of a frame" counterpart
+        to :attr:`~ugaf.vision.screenshot_manager.ScreenshotManager.metrics`
+        capture latency.
+        """
+        return self._processing_metrics.snapshot()
 
     # ------------------------------------------------------------------
     # Screenshot
@@ -172,7 +185,8 @@ class VisionManager(VisionProvider):
             The best :class:`MatchResult`, or ``None``.
 
         """
-        return self._matcher.find_best(source, template, confidence=confidence)
+        with self._processing_metrics.measure():
+            return self._matcher.find_best(source, template, confidence=confidence)
 
     def find_all_templates(
         self,
@@ -191,7 +205,8 @@ class VisionManager(VisionProvider):
             A list of :class:`MatchResult` instances.
 
         """
-        return self._matcher.find_all(source, template, confidence=confidence)
+        with self._processing_metrics.measure():
+            return self._matcher.find_all(source, template, confidence=confidence)
 
     # ------------------------------------------------------------------
     # Feature detection

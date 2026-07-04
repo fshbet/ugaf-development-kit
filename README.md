@@ -25,6 +25,23 @@ without touching ADB or writing code. For an automation with a target app (see
 for it to reach the foreground before automation begins — no manual app-launching
 required. See `ugaf/webapp/` for the FastAPI backend and static frontend.
 
+The toolbar's capture-provider selector switches the screen's frame source between ADB
+(`adb exec-out screencap` — the default) and direct window capture for Android
+emulators running as Windows windows (`pip install ugaf[emulator]`). The sidebar's
+"Performance" panel shows live capture FPS/latency and input latency, whichever
+transport is active. Multiple connected devices can each run the same automation
+concurrently — selecting a device scopes that automation card's Start/Stop/status to
+that device's own instance. See ADR-016/ADR-017 in `ARCHITECTURE_DECISIONS.md`.
+
+The sidebar's "Connection Type" toggle switches between a physical device (the above)
+and an **Android Emulator**: pick a manufacturer/device profile (e.g. Samsung Galaxy
+S25 Ultra) and a performance preset (Low End/Mid Range/Flagship/Gaming), then
+Create/Start/Stop/Delete an AVD directly from the browser — no `avdmanager`/`emulator`
+command lines required. Requires a local Android SDK (`ANDROID_HOME`/`ANDROID_SDK_ROOT`
+set, or installed at the default Android Studio location); the panel shows a clear
+banner instead of failing if no SDK is found. See `ugaf.emulator` and ADR-018 in
+`ARCHITECTURE_DECISIONS.md`.
+
 ### Command-line
 
 Run the bundled demonstration plugin (capture → find template → tap → swipe → type

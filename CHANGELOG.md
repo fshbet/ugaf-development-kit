@@ -2,6 +2,144 @@
 
 ## Unreleased
 
+### Emulator Manager Module
+
+#### Added
+
+- **`ugaf.emulator`**: a new subsystem letting a user target an Android Emulator
+  instance instead of (or alongside) a physical device — an emulator becomes an
+  ordinary `adb` serial once running, so no other layer needs emulator-specific code.
+  - **`EmulatorProvider`** (`ugaf.emulator.provider`): an ABC + `AdapterRegistry`, the
+    same seam pattern as `ScreenshotProvider`/`DeviceProvider`. Only
+    `AndroidStudioProvider` is registered today; a future BlueStacks/LDPlayer/
+    Genymotion/Waydroid backend is a new class + one registration call.
+  - **`AndroidStudioProvider`** (`ugaf.emulator.providers.android_studio`): drives real
+    `avdmanager`/`emulator`/`adb` binaries for the full AVD lifecycle — create, start,
+    stop, list, delete, clone, rename, update hardware, is-running, crash detection,
+    boot-wait, install APK, push, pull. Allocates a fresh console/ADB port pair per
+    launched instance for concurrent multi-instance support.
+  - **`EmulatorManager`** (`ugaf.emulator.manager`): the single facade every caller
+    uses, wiring the SDK locator, device/performance profile managers, the Android
+    version manager, and hardware detector to whichever provider is configured.
+  - **`AndroidSdkLocator`** (`ugaf.emulator.sdk_locator`): finds the Android SDK from
+    `ANDROID_HOME`/`ANDROID_SDK_ROOT`/default install paths, never a hardcoded path;
+    prefers the SDK's own `platform-tools/adb` over whatever is first on `PATH`.
+  - **`DeviceProfileManager`/`PerformanceProfileManager`** (`ugaf.emulator.profiles`/
+    `performance`): the full manufacturer/device library (Google, Samsung, OnePlus,
+    Nothing, Xiaomi, OPPO, vivo, Motorola, Sony, ASUS, HONOR) and performance presets
+    (Low End/Mid Range/Flagship/Gaming/Custom), entirely YAML-driven
+    (`config/manufacturers.yaml`/`config/performance_profiles.yaml`) — no device or
+    preset is hardcoded in Python.
+  - **`AndroidVersionManager`** (`ugaf.emulator.android_versions`): detects installed
+    Android system images and installs missing ones via `sdkmanager`, always
+    live-queried against the real SDK, never a static list.
+  - **`HardwareDetector`** (`ugaf.emulator.hardware`): CPU/RAM/virtualization-
+    acceleration detection (WHPX/Hyper-V/HAXM/KVM via `emulator -accel-check`) and a
+    performance-preset recommendation based on detected headroom.
+  - **Web UI**: a new "Connection Type" radio (Physical Device / Android Emulator)
+    toggles a new Android Emulator panel — Android Version/Manufacturer/Device/
+    Performance Profile/AVD dropdowns, Create/Start/Stop/Delete/Open Android
+    Studio/Refresh buttons — wired to new `/api/emulator/*` routes, all thin
+    delegations to `EmulatorManager` via `AppSession`.
+
+#### Fixed
+
+- Two real bugs were caught specifically by validating against this machine's actual
+  Android SDK rather than only hand-written test fixtures:
+  - `sdkmanager --list` re-lists every already-installed package under "Available
+    Packages" too; a naive dict-building parser let that not-installed duplicate
+    silently overwrite the correct `installed=True` record, making
+    `AndroidVersionManager.ensure_installed()` think an already-installed system image
+    needed downloading. Fixed by preferring the "Installed packages" record when both
+    exist for the same package path.
+  - `AndroidSdkLocator`'s `cmdline-tools` version-directory fallback sorted directory
+    names as plain strings, ranking `"9.0"` above `"12.0"` (lexicographic comparison of
+    the leading digit) and silently preferring an older command-line-tools install.
+    Fixed with numeric-tuple version comparison.
+
+#### Known gaps (documented, not hidden)
+
+- A freshly created AVD did not finish booting to `sys.boot_completed=1` within the
+  default 180s timeout on this development machine when using software rendering on a
+  cold boot — the `emulator` process itself stalled at `gfxstream` graphics backend
+  initialization for several minutes, a real host/driver characteristic of this
+  machine, not a bug in `wait_until_booted()`'s polling logic (which correctly returned
+  `False` at the timeout without raising, and correctly reported the process as still
+  alive). The full AVD lifecycle up to boot completion — create, start, is-running,
+  crash detection, stop, delete — was validated live end-to-end. See ADR-018.
+- "Open Android Studio" only checks a handful of well-known Windows install paths (plus
+  `PATH` on other platforms); a non-standard install location reports "not found"
+  rather than launching. Not load-bearing — every AVD operation works from the web UI
+  without it.
+
+#### Validation
+
+54 new unit/integration tests (`tests/test_emulator_*.py`), all passing, alongside the
+full existing suite (775 tests total), ruff, and mypy strict. Live-validated against
+this machine's real Android SDK installation: real `sdkmanager --list`/`avdmanager list
+avd` parsing (catching the two bugs above), a real create → start → is_running → stop →
+delete AVD cycle, real hardware detection (16 CPUs, ~31GB RAM, WHPX acceleration
+usable), and the web UI's Connection Type toggle and Android Emulator panel confirmed
+live in the browser preview against this machine's actual manufacturer/device/version/
+AVD data — including this machine's 3 genuinely broken pre-existing AVDs (bad
+`config.ini`, missing system image), which `list()` now surfaces with error reasons
+instead of hiding or crashing on. See ADR-018 in `ARCHITECTURE_DECISIONS.md`.
+
+### High-performance capture + multi-device architecture
+
+#### Added
+
+- **`ugaf.core.metrics.MetricsTracker`**: a single reusable rolling-window
+  FPS/latency/processing-time primitive, wired into `ScreenshotManager.metrics`
+  (capture), `VisionManager.processing_metrics` (template-matching time), and
+  `InputManager.metrics` (input round-trip latency). Exposed live via the web UI's new
+  "Performance" panel and `GET /api/devices/{id}/metrics`.
+- **`ugaf.vision.window_capture.WindowCaptureProvider`**: a new capture transport that
+  captures a named Windows window's client area directly (`mss`+`pywin32`, optional
+  `pip install ugaf[emulator]`) — for Android emulators (BlueStacks, NoxPlayer, the
+  Android Studio emulator, ...) running as ordinary windows. Bypasses ADB entirely for
+  the frame source; ADB stays the transport for everything else.
+- **`ugaf.vision.scrcpy_capture.ScrcpyFrameProvider`**: a new capture transport that
+  decodes a scrcpy server's raw H264 video stream via PyAV (optional
+  `pip install ugaf[scrcpy]`) instead of one `adb screencap` round trip per frame.
+  Protocol-correct implementation (push server, forward socket, parse frame-meta
+  framing, decode) — not validated against a live scrcpy server in this environment
+  (none available); see "known gaps" below.
+- **Multi-device concurrent automation**: every `PluginManager` lifecycle method
+  (`initialize`/`start`/`pause`/`resume`/`stop`/`shutdown`/`health`) now accepts an
+  optional `device_id`, letting the *same* automation run as independent, concurrent
+  instances — one per target device — each with its own `GameState`, task, and logs.
+  Fully backward compatible (omitting `device_id` is byte-identical to the old
+  behaviour). `games/shadow_fight_3` now honors a per-instance `context.device_id`.
+  The web UI scopes each automation card's Start/Stop/status to the currently selected
+  device via `?device_id=...`. See ADR-017 in `ARCHITECTURE_DECISIONS.md`.
+- **Web UI**: capture-provider selector (ADB / window capture, with a window-title
+  field) on device connect, and a live "Performance" panel (capture FPS, capture
+  latency, input latency).
+
+#### Known gaps (documented, not hidden)
+
+- Neither `scrcpy` nor an Android emulator was available in this development
+  environment, and `pywin32`/`mss`/`av` have no published wheel yet for the Python 3.14
+  interpreter used here (confirmed: `pip install` resolves cp310-tagged wheels that
+  fail to import). `ScrcpyFrameProvider` and `WindowCaptureProvider`'s Win32-API logic
+  are covered by full unit-test suites (synthetic byte streams / injected fake
+  `win32gui`/`mss`/`av` modules) but not live end-to-end. `WindowCaptureProvider`'s
+  actual capture mechanism *was* validated against a real window (Notepad) once the
+  optional deps were installed in a compatible environment.
+- The "multiple devices at once" claim is proven by mocked-device integration tests
+  (two concurrent `ShadowFight3Game` instances via `asyncio.gather`, independent state,
+  fault isolation) rather than a live two-physical-device demo — only one real Android
+  device was available. See ADR-016/ADR-017 for the full validation breakdown.
+
+#### Validation
+
+Full test suite (721 tests), ruff, and mypy pass. Live-validated on the physical
+Xiaomi/HyperOS device: real capture/input metrics captured through the new
+`/api/devices/{id}/metrics` endpoint and the web UI's Performance panel (measured:
+~2.5s ADB capture latency, ~0.2 FPS, ~164ms input latency — real numbers, not
+placeholders), confirming the metrics pipeline works end-to-end against real hardware.
+
 ### Version 0.2: Application Manager + professional UI redesign
 
 #### Added

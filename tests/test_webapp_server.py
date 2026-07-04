@@ -147,6 +147,51 @@ class TestScreenshotAndActions:
         assert res.status_code == 200
         assert res.json()["typed"] == "hello"
 
+    def test_connect_defaults_to_adb_capture_provider(self, app, adb_mock: MagicMock) -> None:
+        with TestClient(app) as client:
+            res = client.post("/api/devices/fake-serial-1/connect")
+        assert res.json()["capture_provider"] == "adb"
+
+    def test_connect_with_unknown_capture_provider_returns_400(
+        self, app, adb_mock: MagicMock
+    ) -> None:
+        with TestClient(app) as client:
+            res = client.post(
+                "/api/devices/fake-serial-1/connect", json={"capture_provider": "bogus"}
+            )
+        assert res.status_code == 400
+
+    def test_connect_window_capture_without_title_returns_400(
+        self, app, adb_mock: MagicMock
+    ) -> None:
+        with TestClient(app) as client:
+            res = client.post(
+                "/api/devices/fake-serial-1/connect", json={"capture_provider": "window"}
+            )
+        assert res.status_code == 400
+
+
+class TestMetrics:
+    def test_metrics_requires_connection(self, app, adb_mock: MagicMock) -> None:
+        with TestClient(app) as client:
+            res = client.get("/api/devices/fake-serial-1/metrics")
+        assert res.status_code == 409
+
+    def test_metrics_after_connect_and_capture(self, app, adb_mock: MagicMock) -> None:
+        with TestClient(app) as client:
+            client.post("/api/devices/fake-serial-1/connect")
+            client.get("/api/devices/fake-serial-1/screenshot")
+            client.post("/api/devices/fake-serial-1/tap", json={"x": 1, "y": 2})
+            res = client.get("/api/devices/fake-serial-1/metrics")
+
+        assert res.status_code == 200
+        body = res.json()
+        assert set(body.keys()) == {"capture", "input"}
+        assert body["capture"]["count"] >= 1
+        assert body["input"]["count"] >= 1
+        assert "fps" in body["capture"]
+        assert "avg_ms" in body["input"]
+
 
 class TestPlugins:
     def test_list_plugins_empty_games_dir(self, app) -> None:
@@ -186,6 +231,20 @@ class TestPlugins:
 
             run_res = client.post("/api/plugins/demo_workflow/run")
             assert run_res.status_code == 200
+
+    def test_device_scoped_run_creates_independent_instance(self) -> None:
+        """Passing device_id runs a distinct, independently-tracked instance."""
+        demo_app = create_app(games_dir=Path("games"))
+        with TestClient(demo_app) as client:
+            run_res = client.post("/api/plugins/demo_workflow/run?device_id=deviceA")
+            assert run_res.status_code == 200
+            assert run_res.json()["device_id"] == "deviceA"
+
+            health_default = client.get("/api/plugins/demo_workflow/health")
+            assert health_default.json()["status"] == "created"
+
+            health_scoped = client.get("/api/plugins/demo_workflow/health?device_id=deviceA")
+            assert health_scoped.json()["status"] == "completed"
 
 
 class TestLogs:
