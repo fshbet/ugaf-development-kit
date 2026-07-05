@@ -20,6 +20,7 @@ import yaml
 
 from ugaf.core.logger import Logger, get_logger
 from ugaf.emulator.android_versions import AndroidVersionManager
+from ugaf.emulator.dependencies import DependencyReport, EnvironmentChecker
 from ugaf.emulator.hardware import HardwareDetector, HardwareInfo
 from ugaf.emulator.performance import PerformanceProfileManager
 from ugaf.emulator.profiles import DeviceProfileManager
@@ -109,6 +110,7 @@ class EmulatorManager:
             self._android_versions,
             logger=self._logger,
             first_console_port=first_console_port,
+            disable_vulkan=bool(settings.get("disable_vulkan", True)),
         )
 
         self._logger.info(
@@ -121,6 +123,38 @@ class EmulatorManager:
     def sdk_paths(self) -> AndroidSdkPaths:
         """Return the resolved Android SDK tool paths."""
         return self._sdk_paths
+
+    # ------------------------------------------------------------------
+    # Dependency / environment checking (ATDD acceptance criteria)
+    # ------------------------------------------------------------------
+
+    def check_dependencies(self) -> DependencyReport:
+        """Probe every Emulator Manager dependency (Android Studio/SDK/tools) independently.
+
+        Since this method only runs after ``__init__`` already resolved
+        ``self._sdk_paths`` successfully, every blocking component is
+        necessarily present -- this is mainly useful for confirming
+        Android Studio's status without a second SDK-root resolution.
+        Callers that need a full report *before* knowing whether
+        :class:`EmulatorManager` can even be constructed (e.g. the
+        webapp, when the SDK might be entirely missing) should use
+        :class:`~ugaf.emulator.dependencies.EnvironmentChecker` directly
+        instead of going through this class.
+        """
+        return EnvironmentChecker().check(self._sdk_paths.sdk_root)
+
+    def check_system_image(self, manufacturer: str, device_name: str) -> bool:
+        """Return whether the system image a device profile needs is already installed.
+
+        Does not install anything -- :meth:`create` already does that
+        automatically. This is for surfacing the "Required system image
+        installed" acceptance-checklist item to a user *before* they
+        click Create, so they know a first-time create for that
+        device/version pair will need to download something.
+        """
+        profile = self.device_profiles.get(manufacturer, device_name)
+        tag = "google_apis_playstore" if profile.play_store else "google_apis"
+        return self._android_versions.is_installed(profile.api_level, tag, profile.abi)
 
     # ------------------------------------------------------------------
     # Hardware / performance recommendation

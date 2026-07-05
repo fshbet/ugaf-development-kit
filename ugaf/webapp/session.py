@@ -22,7 +22,7 @@ from typing import Any
 from ugaf.apps.types import AppDefinition
 from ugaf.core.bootstrap import Application
 from ugaf.core.config import Config
-from ugaf.emulator import EmulatorManager, SdkNotFoundError
+from ugaf.emulator import EmulatorManager, EnvironmentChecker
 from ugaf.imaging.image import Image
 from ugaf.imaging.manager import ImagingManager
 from ugaf.input.manager import InputManager
@@ -116,8 +116,6 @@ class AppSession:
         self.log_buffer: deque[dict[str, Any]] = deque(maxlen=log_buffer_size)
         self._log_handler = _LogBufferHandler(self.log_buffer)
         self._emulator_manager: EmulatorManager | None = None
-        self._emulator_error: str | None = None
-        self._emulator_manager_attempted = False
 
     async def start(self) -> None:
         """Initialize and start the underlying Application, and begin log capture.
@@ -379,32 +377,44 @@ class AppSession:
         """Lazily construct the :class:`~ugaf.emulator.EmulatorManager`.
 
         Construction shells out to locate the Android SDK, which some
-        installs (or CI/test environments) may not have — deferred
-        until the user actually selects "Android Emulator" so the rest
-        of the control panel works regardless.
+        installs (or CI/test environments) may not have. A *successful*
+        construction is cached (it's immutable once built), but a
+        failed attempt is retried on every call rather than cached --
+        caching a failure would mean the UI keeps reporting "SDK not
+        found" forever even after the user fixes it (installs the SDK,
+        sets ANDROID_HOME, etc.) without restarting the whole webapp, a
+        real "stale status never re-validated" bug this project's ATDD
+        process now explicitly guards against.
 
         Raises:
             SdkNotFoundError: If no Android SDK installation is found.
 
         """
         if self._emulator_manager is None:
-            if self._emulator_manager_attempted and self._emulator_error is not None:
-                raise SdkNotFoundError(self._emulator_error)
-            self._emulator_manager_attempted = True
-            try:
-                self._emulator_manager = EmulatorManager()
-            except SdkNotFoundError as exc:
-                self._emulator_error = str(exc)
-                raise
+            self._emulator_manager = EmulatorManager()
         return self._emulator_manager
 
     def emulator_status(self) -> dict[str, Any]:
-        """Return whether the Emulator Manager is available, and why not if it isn't."""
-        try:
-            manager = self._get_emulator_manager()
-        except SdkNotFoundError as exc:
-            return {"available": False, "sdk_root": None, "error": str(exc)}
-        return {"available": True, "sdk_root": str(manager.sdk_paths.sdk_root), "error": None}
+        """Return live per-dependency status (Android Studio/SDK/tools), never cached.
+
+        Always re-probes the real environment (see
+        :class:`~ugaf.emulator.dependencies.EnvironmentChecker`) instead
+        of reusing a previous result, so a status that was true a
+        minute ago (e.g. "Android Studio not found") cannot linger after
+        the real state changes.
+        """
+        report = EnvironmentChecker().check()
+        dependencies = [
+            {"name": s.name, "found": s.found, "path": s.path, "detail": s.detail}
+            for s in report.as_list()
+        ]
+        blocking = report.first_missing()
+        return {
+            "available": report.ready,
+            "sdk_root": report.sdk.path,
+            "error": blocking.detail if blocking else None,
+            "dependencies": dependencies,
+        }
 
     def list_manufacturers(self) -> list[str]:
         """Return every supported device manufacturer."""
@@ -440,6 +450,17 @@ class AppSession:
             }
             for img in images
         ]
+
+    def check_system_image(self, manufacturer: str, device_name: str) -> dict[str, Any]:
+        """Return whether the system image a device profile needs is already installed.
+
+        Surfaced so the UI can show "Required system image installed:
+        yes/no" before Create is clicked -- a first-time create for a
+        not-yet-installed Android version will trigger an automatic
+        (but potentially multi-minute) download.
+        """
+        installed = self._get_emulator_manager().check_system_image(manufacturer, device_name)
+        return {"installed": installed}
 
     def list_avds(self) -> list[dict[str, Any]]:
         """Return every known AVD (valid or broken) as plain dicts."""
@@ -483,6 +504,10 @@ class AppSession:
     def delete_avd(self, name: str) -> None:
         """Permanently delete an AVD."""
         self._get_emulator_manager().delete(name)
+
+    def rename_avd(self, name: str, new_name: str) -> None:
+        """Rename an AVD."""
+        self._get_emulator_manager().rename(name, new_name)
 
     def open_android_studio(self) -> bool:
         """Best-effort launch of the Android Studio IDE, if found at a well-known path.

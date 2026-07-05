@@ -384,3 +384,104 @@ def test_tool_failure_raises_emulator_command_error(
     provider = AndroidStudioProvider(sdk_paths, android_versions)
     with pytest.raises(EmulatorCommandError):
         provider.list()
+
+
+# ----------------------------------------------------------------------
+# start(): -crash-report-mode / disable_vulkan argument threading
+#
+# Regression coverage for two real bugs found during ATDD acceptance
+# testing on real hardware: (1) the emulator never reached boot when
+# launched non-interactively because it tried to show a native
+# crash-reporting consent dialog with no window station to render it on
+# (fixed by always passing -crash-report-mode disabled); (2) on a hybrid
+# NVIDIA+AMD host, the emulator crashed with a real access violation
+# inside the AMD driver (amdxc64.dll, confirmed via Windows Event
+# Viewer) during its GPU-capability probe, regardless of the AVD's own
+# gpu_mode — only forcing `-gpu swangle` alongside `-feature -Vulkan`
+# reliably avoided it (fixed via the disable_vulkan constructor flag).
+# ----------------------------------------------------------------------
+
+
+def _fake_popen(*args: object, **kwargs: object) -> MagicMock:
+    process = MagicMock()
+    process.pid = 4242
+    return process
+
+
+def test_start_always_disables_crash_report_dialog(
+    sdk_paths: AndroidSdkPaths, android_versions: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_fake_avd(sdk_paths.avd_home, "PixelPlay")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **k: _mock_result(_AVD_LIST_OUTPUT.format(avd_home=sdk_paths.avd_home))
+        if "list" in cmd
+        else _mock_result("List of devices attached\n"),
+    )
+    captured: dict[str, list[str]] = {}
+
+    def fake_popen(args: list[str], **kwargs: object) -> MagicMock:
+        captured["args"] = args
+        return _fake_popen()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    provider = AndroidStudioProvider(sdk_paths, android_versions)
+    provider.start("PixelPlay")
+
+    assert "-crash-report-mode" in captured["args"]
+    assert captured["args"][captured["args"].index("-crash-report-mode") + 1] == "disabled"
+
+
+def test_start_disables_vulkan_by_default(
+    sdk_paths: AndroidSdkPaths, android_versions: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_fake_avd(sdk_paths.avd_home, "PixelPlay")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **k: _mock_result(_AVD_LIST_OUTPUT.format(avd_home=sdk_paths.avd_home))
+        if "list" in cmd
+        else _mock_result("List of devices attached\n"),
+    )
+    captured: dict[str, list[str]] = {}
+
+    def fake_popen(args: list[str], **kwargs: object) -> MagicMock:
+        captured["args"] = args
+        return _fake_popen()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    provider = AndroidStudioProvider(sdk_paths, android_versions)  # disable_vulkan defaults True
+    provider.start("PixelPlay")
+
+    assert "-feature" in captured["args"]
+    assert "-Vulkan" in captured["args"]
+    assert "-gpu" in captured["args"]
+    assert captured["args"][captured["args"].index("-gpu") + 1] == "swangle"
+
+
+def test_start_omits_vulkan_workaround_when_disabled(
+    sdk_paths: AndroidSdkPaths, android_versions: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_fake_avd(sdk_paths.avd_home, "PixelPlay")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **k: _mock_result(_AVD_LIST_OUTPUT.format(avd_home=sdk_paths.avd_home))
+        if "list" in cmd
+        else _mock_result("List of devices attached\n"),
+    )
+    captured: dict[str, list[str]] = {}
+
+    def fake_popen(args: list[str], **kwargs: object) -> MagicMock:
+        captured["args"] = args
+        return _fake_popen()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    provider = AndroidStudioProvider(sdk_paths, android_versions, disable_vulkan=False)
+    provider.start("PixelPlay")
+
+    assert "-feature" not in captured["args"]
+    assert "-gpu" not in captured["args"]
+    # The crash-dialog fix is unconditional and must still be present.
+    assert "-crash-report-mode" in captured["args"]

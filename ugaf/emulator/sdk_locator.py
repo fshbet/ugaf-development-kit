@@ -79,7 +79,16 @@ class AndroidSdkPaths:
 
 
 class AndroidSdkLocator:
-    """Finds an Android SDK installation and its command-line tools."""
+    """Finds an Android SDK installation and its command-line tools.
+
+    :meth:`locate` resolves everything at once and raises on the first
+    missing piece. Each step is also exposed as its own public method
+    (:meth:`find_sdk_root`, :meth:`find_adb`, :meth:`find_emulator`,
+    :meth:`find_sdkmanager`, :meth:`find_avdmanager`) so a caller that
+    needs to report *which specific* component is missing --
+    :class:`~ugaf.emulator.dependencies.EnvironmentChecker` -- can probe
+    each independently instead of only getting the first failure.
+    """
 
     def locate(self, sdk_root_override: str | Path | None = None) -> AndroidSdkPaths:
         """Resolve the Android SDK root and every tool path it provides.
@@ -96,35 +105,17 @@ class AndroidSdkLocator:
                 required tool is missing from an otherwise-found SDK.
 
         """
-        sdk_root = self._find_sdk_root(sdk_root_override)
-        platform_tools = sdk_root / "platform-tools" / _exe("adb")
-        adb = platform_tools if platform_tools.is_file() else self._find_on_path("adb")
-        if adb is None:
-            raise SdkNotFoundError(
-                f"adb not found under {sdk_root / 'platform-tools'} or on PATH"
-            )
-
-        emulator = sdk_root / "emulator" / _exe("emulator")
-        if not emulator.is_file():
-            raise SdkNotFoundError(f"emulator executable not found at {emulator}")
-
-        sdkmanager = self._find_cmdline_tool(sdk_root, "sdkmanager")
-        avdmanager = self._find_cmdline_tool(sdk_root, "avdmanager")
-
+        sdk_root = self.find_sdk_root(sdk_root_override)
         return AndroidSdkPaths(
             sdk_root=sdk_root,
-            adb=adb,
-            emulator=emulator,
-            sdkmanager=sdkmanager,
-            avdmanager=avdmanager,
+            adb=self.find_adb(sdk_root),
+            emulator=self.find_emulator(sdk_root),
+            sdkmanager=self.find_sdkmanager(sdk_root),
+            avdmanager=self.find_avdmanager(sdk_root),
             avd_home=self._find_avd_home(),
         )
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _find_sdk_root(self, override: str | Path | None) -> Path:
+    def find_sdk_root(self, override: str | Path | None = None) -> Path:
         """Resolve the SDK root from an override, env vars, or default install locations."""
         candidates: list[Path] = []
         if override is not None:
@@ -144,6 +135,58 @@ class AndroidSdkLocator:
             "environment variable to your SDK root, or pass sdk_root_override "
             "explicitly. Checked: " + ", ".join(str(c) for c in candidates)
         )
+
+    def find_adb(self, sdk_root: Path) -> Path:
+        """Resolve ``adb`` from *sdk_root*'s ``platform-tools/``, falling back to ``PATH``.
+
+        Raises:
+            SdkNotFoundError: If ``adb`` is found neither under
+                *sdk_root* nor on ``PATH``.
+
+        """
+        platform_tools = sdk_root / "platform-tools" / _exe("adb")
+        adb = platform_tools if platform_tools.is_file() else self._find_on_path("adb")
+        if adb is None:
+            raise SdkNotFoundError(
+                f"adb not found under {sdk_root / 'platform-tools'} or on PATH. "
+                "Install the 'Android SDK Platform-Tools' package via Android "
+                "Studio's SDK Manager, or `sdkmanager platform-tools`."
+            )
+        return adb
+
+    def find_emulator(self, sdk_root: Path) -> Path:
+        """Resolve the ``emulator`` executable from *sdk_root*.
+
+        Raises:
+            SdkNotFoundError: If the ``emulator`` package is not installed.
+
+        """
+        emulator = sdk_root / "emulator" / _exe("emulator")
+        if not emulator.is_file():
+            raise SdkNotFoundError(
+                f"emulator executable not found at {emulator}. Install the "
+                "'Android Emulator' package via Android Studio's SDK Manager, "
+                "or `sdkmanager emulator`."
+            )
+        return emulator
+
+    def find_sdkmanager(self, sdk_root: Path) -> Path:
+        """Resolve ``sdkmanager`` from *sdk_root*'s ``cmdline-tools/``.
+
+        Raises:
+            SdkNotFoundError: If no ``cmdline-tools`` package is installed.
+
+        """
+        return self._find_cmdline_tool(sdk_root, "sdkmanager")
+
+    def find_avdmanager(self, sdk_root: Path) -> Path:
+        """Resolve ``avdmanager`` from *sdk_root*'s ``cmdline-tools/``.
+
+        Raises:
+            SdkNotFoundError: If no ``cmdline-tools`` package is installed.
+
+        """
+        return self._find_cmdline_tool(sdk_root, "avdmanager")
 
     def _default_sdk_locations(self) -> list[Path]:
         """Well-known per-OS default SDK install locations (Android Studio's defaults)."""
@@ -184,7 +227,10 @@ class AndroidSdkLocator:
                     return candidate
 
         raise SdkNotFoundError(
-            f"{tool_name} not found under {cmdline_tools} (checked {len(search_dirs)} location(s))"
+            f"{tool_name} not found under {cmdline_tools} (checked {len(search_dirs)} "
+            "location(s)). Install the 'Android SDK Command-line Tools' package via "
+            "Android Studio's SDK Manager (Settings > Languages & Frameworks > "
+            "Android SDK > SDK Tools)."
         )
 
     def _find_avd_home(self) -> Path:

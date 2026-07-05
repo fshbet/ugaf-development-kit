@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+### Emulator Manager: ATDD acceptance validation, dependency checklist, real boot-crash fixes
+
+#### Added
+
+- **`ugaf.emulator.dependencies.EnvironmentChecker`**: probes Android Studio, the SDK
+  root, platform-tools, `emulator.exe`, `sdkmanager`, and `avdmanager` independently
+  (never one all-or-nothing failure), producing a `DependencyReport` the webapp renders
+  as a real checklist with paths or specific "missing" reasons. Android Studio is
+  checked/displayed but never blocking (the SDK command-line tools work headlessly).
+  `AndroidSdkLocator` gained public `find_adb`/`find_emulator`/`find_sdkmanager`/
+  `find_avdmanager` to support this.
+- **Webapp**: the Android Emulator panel now shows a live per-dependency checklist and
+  a "Required system image installed" indicator for the selected device, and disables
+  Create/Start/Stop/Rename/Delete with a specific reason when a blocking dependency is
+  missing. Added a Rename button/route (`EmulatorManager.rename()` already existed at
+  the Python API level but was never exposed through the webapp).
+
+#### Fixed
+
+- **Real bug**: `AndroidStudioLocator` (the "Open Android Studio" button) never found
+  Android Studio on this project's own development machine — it's installed as a
+  sibling of the SDK root (`E:\Android\Android Studio` next to `E:\Android\SDK`), not
+  any of the "well-known" default locations previously checked. Now checks
+  `ANDROID_STUDIO_HOME`, then the sibling-of-SDK-root layout, before falling back to
+  the original defaults and `PATH`.
+- **Real bug**: launched non-interactively, the emulator never reached boot — it tried
+  to show a native crash-reporting consent dialog with no window station to render it
+  on, and exited silently before starting the AVD. Fixed by always passing
+  `-crash-report-mode disabled`.
+- **Real bug**: on this machine's hybrid NVIDIA+AMD GPU configuration, the emulator
+  crashed with a real access violation inside the AMD graphics driver (`amdxc64.dll`,
+  confirmed via Windows Event Viewer) during its GPU-capability probe, regardless of
+  the AVD's own GPU mode. Fixed by forcing `-feature -Vulkan -gpu swangle` by default
+  (configurable via `emulator_settings.yaml`'s new `disable_vulkan` setting).
+- **Real bug**: `AppSession._get_emulator_manager()` cached a *failed* SDK-detection
+  attempt forever, so "SDK not found" could keep showing even after a user fixed the
+  underlying problem without restarting the webapp. `emulator_status()` now always
+  re-probes live instead of reusing a cached result.
+- **Real bug**: switching Connection Type away from and back to "Android Emulator"
+  skipped re-checking dependency/AVD status after the first successful load, risking
+  stale status. Now always re-checks on every switch.
+- **Real bug**: rapid manufacturer/device selection changes could let an earlier,
+  slower "system image installed?" response resolve after a later, faster one and
+  silently overwrite it with stale data — a genuine out-of-order response race. Fixed
+  with a monotonic request-token guard (applied to both the system-image check and the
+  manufacturer→device-list fetch, which had the identical race).
+- **Real bug**: the screen viewer's tap/swipe coordinate math divided by the image
+  element's rendered height with no floor; an unusually short browser viewport could
+  compute `y=Infinity`, which JSON serializes to `null`, failing the request with a
+  confusing 422 instead of just ignoring the click. Fixed with a CSS floor on the
+  image's max-height and an explicit zero-rect guard in the coordinate calculation.
+
+#### Validation
+
+Full Create → Start → real boot (`sys.boot_completed=1`) → launcher-visible (verified
+via `dumpsys`) → Device-Manager-connected → real screenshot captured (device profile's
+exact resolution) → live screen → tap/swipe/type → Stop → clean shutdown (ADB
+disconnect + process exit confirmed via `tasklist`) → Rename → Delete chain validated
+live, repeatedly, through the actual web UI against this machine's real Android SDK —
+see ADR-019 for the full root-cause writeups. 801 tests passing (26 new regression
+tests for the dependency checker, Android Studio locator, and `-crash-report-mode`/
+`disable_vulkan` argument threading), ruff and mypy clean.
+
 ### Emulator Manager Module
 
 #### Added

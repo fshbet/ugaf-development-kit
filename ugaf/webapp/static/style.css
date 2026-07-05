@@ -194,7 +194,12 @@ h1, h2, h3 { margin: 0; }
 
 .sidebar-left, .sidebar-right { padding: 16px; display: flex; flex-direction: column; gap: 20px; }
 
-.panel-section { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+/* flex-shrink: 0 keeps each sidebar section at its natural content height —
+   without it, a tall section (e.g. the Android Emulator panel's stack of
+   dropdowns) gets squeezed by flexbox below its content's real size, and the
+   overflow spills visually into the next section instead of the sidebar
+   itself scrolling (`.panel` already has `overflow-y: auto` for exactly this). */
+.panel-section { display: flex; flex-direction: column; gap: 10px; min-height: 0; flex-shrink: 0; }
 
 .section-header {
   display: flex;
@@ -246,7 +251,7 @@ h1, h2, h3 { margin: 0; }
 /* ==========================================================================
    Devices
    ========================================================================== */
-.device-list, .automation-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.device-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 
 .empty-hint {
   border: 1px dashed var(--border-strong);
@@ -315,55 +320,17 @@ h1, h2, h3 { margin: 0; }
 /* ==========================================================================
    Automations
    ========================================================================== */
-.automation-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 12px;
-  background: var(--surface);
-  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
-}
-.automation-card:hover { border-color: var(--border-strong); }
-.automation-card.running { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok); }
-.automation-card.error { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
-
-.automation-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-.automation-head .name { font-weight: 600; font-size: 13.5px; }
-.automation-version { color: var(--muted); font-size: 11px; font-weight: 500; }
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 8px;
-  border-radius: var(--radius-pill);
-  font-size: 10.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.status-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.status-pill.st-idle, .status-pill.st-created { color: var(--muted); background: var(--surface-sunken); }
-.status-pill.st-initialized { color: var(--info); background: var(--info-soft); }
-.status-pill.st-running { color: var(--ok); background: var(--ok-soft); }
-.status-pill.st-paused { color: var(--warn); background: var(--warn-soft); }
-.status-pill.st-stopped { color: var(--muted); background: var(--surface-sunken); }
-.status-pill.st-error { color: var(--danger); background: var(--danger-soft); }
-.status-pill.st-running::before { animation: pulse-dot 1.4s var(--ease) infinite; }
-
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
 }
 
-.automation-desc { font-size: 12px; color: var(--text-secondary); margin-top: 6px; line-height: 1.4; }
+.automation-desc { font-size: 12px; color: var(--text-secondary); }
 
 .target-app-chip {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 8px;
   padding: 6px 8px;
   border-radius: var(--radius-sm);
   background: var(--surface-sunken);
@@ -373,29 +340,6 @@ h1, h2, h3 { margin: 0; }
 }
 .target-app-chip svg { width: 13px; height: 13px; flex-shrink: 0; color: var(--muted); }
 .target-app-chip .pkg { color: var(--muted); font-family: var(--mono); font-size: 10.5px; }
-
-.automation-status-line {
-  margin-top: 8px;
-  font-size: 11.5px;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 16px;
-}
-
-.spinner {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 2px solid var(--border-strong);
-  border-top-color: var(--accent);
-  animation: spin 0.7s linear infinite;
-  flex-shrink: 0;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-
-.automation-actions { display: flex; gap: 8px; margin-top: 10px; }
 
 /* ==========================================================================
    Buttons
@@ -556,6 +500,29 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   border: 1px solid transparent;
 }
 
+/* Acceptance-checklist style dependency status (Android Studio/SDK/tools). */
+.dependency-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dependency-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.dependency-item .dep-icon { flex-shrink: 0; width: 13px; height: 13px; }
+.dependency-item.dep-ok .dep-icon { color: var(--ok); }
+.dependency-item.dep-missing .dep-icon { color: var(--danger); }
+.dependency-item.dep-missing { color: var(--danger); }
+.dependency-item .dep-name { font-weight: 600; }
+.dependency-item .dep-path { color: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+
 .viewer-stage {
   flex: 1;
   display: flex;
@@ -573,11 +540,15 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   overflow: hidden;
   background: #000;
   box-shadow: var(--shadow-lg);
-  max-height: calc(100vh - 220px);
+  /* max() keeps a sane floor so a very short viewport (little vertical
+     space left after chrome/toolbars) never collapses this to 0 --
+     that previously made the tap/swipe coordinate math divide by zero
+     (rect.height === 0), sending Infinity/NaN coordinates to the device. */
+  max-height: max(240px, calc(100vh - 220px));
   line-height: 0;
 }
 
-#screen-img { display: block; max-height: calc(100vh - 220px); cursor: crosshair; user-select: none; }
+#screen-img { display: block; max-height: max(240px, calc(100vh - 220px)); cursor: crosshair; user-select: none; }
 
 .viewer-empty {
   display: flex;

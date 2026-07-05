@@ -221,18 +221,63 @@ leaves room for future non-Android-Studio emulator backends.
       selection correctly re-populates the device dropdown, the Android Version
       dropdown correctly pre-selects this machine's one installed image, and the AVD
       dropdown correctly lists real (and broken) AVDs from this machine.
-- [~] Boot-completion wait: `wait_until_booted()`'s polling logic is correct (verified
-      it returns `False` without raising at timeout, and correctly reports the process
-      as still alive), but a freshly created AVD did not finish booting to
-      `sys.boot_completed=1` within the default 180s timeout on this machine using
-      software rendering on a cold boot — a real host/driver characteristic (the
-      `emulator` process stalled at `gfxstream` graphics backend init), not a bug in
-      the polling code. See ADR-018 for the full writeup and the config knob
-      (`emulator_settings.yaml`'s `boot_timeout_seconds`) to work around it.
+- [x] Boot-completion wait: the ADR-018 boot stall was **root-caused and fixed** during
+      the ATDD acceptance pass below — see the "ATDD acceptance validation" entry.
 
 See ADR-018 in `ARCHITECTURE_DECISIONS.md` for the full design, including both bugs
 this real-environment validation caught (sdkmanager catalog-duplicate parsing,
-cmdline-tools version-string sorting) and the honest boot-timing gap above.
+cmdline-tools version-string sorting).
+
+## Emulator Manager: ATDD acceptance validation (2026-07-05)
+
+Directive: treat every emulator feature as a complete, user-facing workflow and
+validate it exactly as a user would, through the real web UI, with evidence — not
+"unit tests pass" as a stand-in for "the feature works."
+
+- [x] **Dependency checklist**: `ugaf.emulator.dependencies.EnvironmentChecker` probes
+      Android Studio/SDK/platform-tools/emulator.exe/sdkmanager/avdmanager
+      independently; the webapp renders real per-item status and gates
+      Create/Start/Stop/Rename/Delete with a specific reason when a blocking
+      dependency is missing. **Validated live**: all 6 show green on this machine's
+      real SDK; simulated-missing-dependency scenario correctly disables every button
+      and shows the exact missing component.
+- [x] **Root-caused and fixed the ADR-018 boot stall**: two independent real bugs,
+      each confirmed with direct evidence (not guessed) — (1) the emulator's own
+      first-run crash-reporting consent dialog silently killed non-interactive
+      launches (fixed: always pass `-crash-report-mode disabled`); (2) a real access
+      violation inside this machine's AMD graphics driver (`amdxc64.dll`, confirmed via
+      Windows Event Viewer) during the emulator's GPU-capability probe, regardless of
+      the AVD's own GPU mode (fixed: force `-feature -Vulkan -gpu swangle` by default,
+      configurable via `emulator_settings.yaml`'s `disable_vulkan`). See ADR-019.
+- [x] **Full Create → Start → boot → live-screen → Stop chain validated live,
+      repeatedly**, through the actual web UI: AVD created → listed → exists on disk →
+      config valid; emulator process starts → ADB detects it (`emulator-5554`,
+      `offline` → `device`) → real `sys.boot_completed=1` → launcher confirmed
+      foreground via `dumpsys` → connected through the webapp's Device Manager → real
+      screenshot captured at the device profile's exact resolution (1080×2424 for
+      Pixel 9) → tap/swipe/type all executed successfully against the live device →
+      Stop → ADB disconnects → both `emulator.exe` and `qemu-system-x86_64.exe`
+      processes exit (confirmed via `tasklist`) → UI updates correctly. Rename and
+      Delete also validated via the real API (a Rename route/button did not exist
+      before this pass — added, since `EmulatorManager.rename()` already existed at
+      the Python level but was never exposed through the webapp).
+- [x] **Fixed three real UI state-machine bugs** found by this pass: emulator status
+      being cached forever after a failed SDK-detection attempt instead of
+      re-probing live; the Connection Type toggle skipping re-checks after the first
+      load; and a genuine out-of-order-response race where rapid manufacturer/device
+      switching could let a stale "system image installed?" answer overwrite a fresher
+      one (fixed with a monotonic request-token guard).
+- [x] **Fixed a real coordinate-overlay bug**: the tap/swipe coordinate math divided by
+      the screen image's rendered height with no floor, so an unusually short
+      viewport could compute `y=Infinity` (silently becoming `null` over JSON and
+      failing the request with a confusing 422). Fixed with a CSS floor and an
+      explicit zero-rect guard.
+
+801 tests passing (26 new regression tests added this pass), ruff and mypy clean. See
+ADR-019 in `ARCHITECTURE_DECISIONS.md` for full root-cause writeups and the one
+documented, unsolved trade-off (the AMD-driver fix disables hardware-GPU rendering by
+default on every host, not just ones that hit the bug, since there's no way to detect
+it in advance short of booting and watching it crash).
 
 ---
 

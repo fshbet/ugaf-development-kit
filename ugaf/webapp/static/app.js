@@ -5,6 +5,7 @@
     devices: [],
     selectedDeviceId: null,
     zoom: 1.0,
+    fitApplied: false,
     logSince: 0,
     dragStart: null,
     screenLoaded: false,
@@ -102,7 +103,7 @@
         state.selectedDeviceId = d.id;
         renderDevices();
         renderDeviceInfo();
-        refreshAllAutomationStatuses();
+        refreshAutomationStatus();
         refreshMetrics();
       });
       list.appendChild(li);
@@ -142,6 +143,7 @@
         }),
       });
       setAction(`Connected to ${d.name}`);
+      state.fitApplied = false;
       await refreshDevices();
       await captureScreenshot();
     } catch (err) {
@@ -171,6 +173,31 @@
     else el("coord-readout").textContent = "No device connected";
   }
 
+  // Computes the zoom level that fits the image's natural size exactly inside
+  // the viewer's available space (accounting for #screen-wrap's padding/border),
+  // so the very first frame of a newly connected device fills the viewer
+  // instead of rendering at a fixed 100% that's either way too large (a real
+  // phone's native resolution) or too small.
+  function fitZoomFor(naturalWidth, naturalHeight) {
+    const stage = document.querySelector(".viewer-stage");
+    const wrap = el("screen-wrap");
+    const stageStyle = getComputedStyle(stage);
+    const wrapStyle = getComputedStyle(wrap);
+    const paddingX = parseFloat(stageStyle.paddingLeft) + parseFloat(stageStyle.paddingRight);
+    const paddingY = parseFloat(stageStyle.paddingTop) + parseFloat(stageStyle.paddingBottom);
+    const borderX = parseFloat(wrapStyle.borderLeftWidth) + parseFloat(wrapStyle.borderRightWidth);
+    const borderY = parseFloat(wrapStyle.borderTopWidth) + parseFloat(wrapStyle.borderBottomWidth);
+    const availWidth = stage.clientWidth - paddingX - borderX;
+    const availHeight = stage.clientHeight - paddingY - borderY;
+    if (availWidth <= 0 || availHeight <= 0 || !naturalWidth || !naturalHeight) return 1.0;
+    return Math.min(availWidth / naturalWidth, availHeight / naturalHeight);
+  }
+
+  function applyImageSize(img) {
+    if (img.naturalWidth) img.style.width = `${img.naturalWidth * state.zoom}px`;
+    el("zoom-level").textContent = `${Math.round(state.zoom * 100)}%`;
+  }
+
   async function captureScreenshot() {
     const d = selectedDevice();
     if (!d) return setAction("Select and connect a device first", "error");
@@ -181,7 +208,11 @@
       const img = el("screen-img");
       img.src = URL.createObjectURL(blob);
       img.onload = () => {
-        img.style.width = `${img.naturalWidth * state.zoom}px`;
+        if (!state.fitApplied) {
+          state.zoom = fitZoomFor(img.naturalWidth, img.naturalHeight);
+          state.fitApplied = true;
+        }
+        applyImageSize(img);
         setScreenVisible(true);
       };
       setAction("Screen captured");
@@ -190,9 +221,16 @@
     }
   }
 
+  // Returns null instead of Infinity/NaN coordinates when the image element
+  // has collapsed to zero width/height (e.g. an unusually short browser
+  // viewport) — a real bug found in ATDD acceptance testing where a
+  // zero-height rect silently produced `y=Infinity`, which the JSON
+  // serializer then turned into `null` on the wire, failing the tap/swipe
+  // request with a confusing 422 instead of just not acting on a bad click.
   function imageToDeviceCoords(evt) {
     const img = el("screen-img");
     const rect = img.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
     const scaleX = img.naturalWidth / rect.width;
     const scaleY = img.naturalHeight / rect.height;
     const x = Math.round((evt.clientX - rect.left) * scaleX);
@@ -236,8 +274,9 @@
     const img = el("screen-img");
     img.addEventListener("mousemove", (evt) => {
       if (!state.screenLoaded) return;
-      const { x, y } = imageToDeviceCoords(evt);
-      el("coord-readout").textContent = `x=${x}, y=${y}`;
+      const coords = imageToDeviceCoords(evt);
+      if (!coords) return;
+      el("coord-readout").textContent = `x=${coords.x}, y=${coords.y}`;
     });
     img.addEventListener("mousedown", (evt) => {
       if (!state.screenLoaded) return;
@@ -246,6 +285,10 @@
     img.addEventListener("mouseup", async (evt) => {
       if (!state.dragStart) return;
       const end = imageToDeviceCoords(evt);
+      if (!end) {
+        state.dragStart = null;
+        return;
+      }
       const dx = Math.abs(end.x - state.dragStart.x);
       const dy = Math.abs(end.y - state.dragStart.y);
       if (dx < 10 && dy < 10) {
@@ -326,131 +369,127 @@
     error: "Error",
   };
 
+  const automations = { list: [] };
+
   // Automation status/run/stop are scoped to the currently selected
   // device (PluginManager's device_id-parametrized instances) so the
   // same automation can run concurrently on several devices, each
-  // tracked independently — the card just reflects whichever device is
-  // selected right now.
+  // tracked independently — the dropdown just reflects whichever device
+  // is selected right now.
   function deviceQuery() {
     return state.selectedDeviceId ? `?device_id=${encodeURIComponent(state.selectedDeviceId)}` : "";
   }
 
-  async function refreshAutomationStatus(li, automationId) {
-    try {
-      const res = await api(`/api/plugins/${automationId}/health${deviceQuery()}`);
-      const health = await res.json();
-      applyAutomationStatus(li, health);
-    } catch {
-      // Health fetch failing shouldn't break the automation list.
-    }
+  function selectedAutomation() {
+    const id = el("automation-select").value;
+    return automations.list.find((p) => p.id === id) || null;
   }
 
-  function refreshAllAutomationStatuses() {
-    el("plugin-list")
-      .querySelectorAll(".automation-card")
-      .forEach((li) => refreshAutomationStatus(li, li.dataset.automationId));
-  }
-
-  function applyAutomationStatus(li, health) {
-    const pill = li.querySelector(".status-pill");
-    const statusKey = (health.status || "created").toLowerCase();
-    pill.textContent = STATUS_LABEL[statusKey] || health.status;
-    pill.className = `status-pill st-${statusKey}`;
-
-    li.classList.toggle("running", statusKey === "running" || statusKey === "paused");
-    li.classList.toggle("error", statusKey === "error");
-
-    const statusLine = li.querySelector(".automation-status-line");
-    const onDevice = state.selectedDeviceId ? ` on ${state.selectedDeviceId}` : "";
-    if (health.target_app) {
-      const launched = health.target_app.launched;
-      statusLine.textContent = launched
-        ? `${health.target_app.name} is running${onDevice}`
-        : `${health.target_app.name} not yet launched`;
+  function renderAutomationDetails() {
+    const p = selectedAutomation();
+    const chip = el("automation-target-app");
+    if (p && p.target_app) {
+      chip.innerHTML = `${APP_ICON}<span>${p.target_app.name}</span><span class="pkg">${p.target_app.package}</span>`;
+      chip.classList.remove("hidden");
     } else {
-      statusLine.textContent = "";
+      chip.classList.add("hidden");
+    }
+    el("automation-desc").textContent = p ? p.description : "";
+  }
+
+  async function refreshAutomationStatus() {
+    const p = selectedAutomation();
+    if (!p) return;
+    try {
+      const res = await api(`/api/plugins/${p.id}/health${deviceQuery()}`);
+      const health = await res.json();
+      const statusKey = (health.status || "created").toLowerCase();
+      const onDevice = state.selectedDeviceId ? ` on ${state.selectedDeviceId}` : "";
+      let text = STATUS_LABEL[statusKey] || health.status;
+      if (health.target_app) {
+        text += health.target_app.launched
+          ? ` — ${health.target_app.name} is running${onDevice}`
+          : ` — ${health.target_app.name} not yet launched`;
+      }
+      const tone =
+        statusKey === "running" || statusKey === "paused"
+          ? "success"
+          : statusKey === "error"
+            ? "error"
+            : null;
+      setAutomationStatus(text, tone);
+    } catch {
+      // Health fetch failing shouldn't break the rest of the UI.
     }
   }
 
-  function setAutomationBusy(li, busy, label) {
-    const statusLine = li.querySelector(".automation-status-line");
-    li.querySelectorAll(".automation-actions button").forEach((btn) => (btn.disabled = busy));
-    if (busy) {
-      statusLine.innerHTML = `<span class="spinner"></span> ${label}`;
+  function setAutomationStatus(text, tone) {
+    const banner = el("automation-status");
+    el("automation-status-text").textContent = text;
+    banner.className = "status-banner" + (tone ? ` banner-${tone}` : "");
+  }
+
+  function setAutomationBusy(busy) {
+    el("automation-btn-start").disabled = busy;
+    el("automation-btn-stop").disabled = busy;
+    el("automation-select").disabled = busy;
+  }
+
+  async function startSelectedAutomation() {
+    const p = selectedAutomation();
+    if (!p) return;
+    const onDevice = state.selectedDeviceId ? ` on ${state.selectedDeviceId}` : "";
+    const label = p.target_app ? `Launching ${p.target_app.name}${onDevice}…` : `Starting ${p.name}${onDevice}…`;
+    setAction(label);
+    setAutomationBusy(true);
+    setAutomationStatus(label, "busy");
+    try {
+      await api(`/api/plugins/${p.id}/run${deviceQuery()}`, { method: "POST" });
+      setAction(`${p.name} running${onDevice}`);
+    } catch (err) {
+      setAction(`${p.name} failed to start: ${err.message}`, "error");
     }
+    setAutomationBusy(false);
+    await refreshAutomationStatus();
+  }
+
+  async function stopSelectedAutomation() {
+    const p = selectedAutomation();
+    if (!p) return;
+    setAutomationBusy(true);
+    setAutomationStatus(`Stopping ${p.name}…`, "busy");
+    try {
+      await api(`/api/plugins/${p.id}/stop${deviceQuery()}`, { method: "POST" });
+      setAction(`${p.name} stopped`);
+    } catch (err) {
+      setAction(`${p.name} failed to stop: ${err.message}`, "error");
+    }
+    setAutomationBusy(false);
+    await refreshAutomationStatus();
   }
 
   async function refreshPlugins() {
     const res = await api("/api/plugins");
-    const plugins = await res.json();
-    const list = el("plugin-list");
-    list.innerHTML = "";
-    el("automation-count").textContent = String(plugins.length);
+    automations.list = await res.json();
+    el("automation-count").textContent = String(automations.list.length);
 
-    if (!plugins.length) {
-      list.innerHTML = `<li class="empty-hint">No automations found under games/. Add a plugin folder with a manifest.yaml to see it here.</li>`;
+    const select = el("automation-select");
+    if (!automations.list.length) {
+      select.innerHTML = `<option value="">No automations found under games/</option>`;
+      el("automation-btn-start").disabled = true;
+      el("automation-btn-stop").disabled = true;
+      renderAutomationDetails();
       return;
     }
+    el("automation-btn-start").disabled = false;
+    el("automation-btn-stop").disabled = false;
 
-    for (const p of plugins) {
-      const li = document.createElement("li");
-      li.className = "automation-card";
-      li.dataset.automationId = p.id;
-      const targetChip = p.target_app
-        ? `<div class="target-app-chip">${APP_ICON}<span>${p.target_app.name}</span><span class="pkg">${p.target_app.package}</span></div>`
-        : "";
-      li.innerHTML = `
-        <div class="automation-head">
-          <div>
-            <span class="name">${p.name}</span>
-            <span class="automation-version">v${p.version}</span>
-          </div>
-          <span class="status-pill st-created">Idle</span>
-        </div>
-        <div class="automation-desc">${p.description}</div>
-        ${targetChip}
-        <div class="automation-status-line"></div>
-        <div class="automation-actions">
-          <button class="btn btn-primary btn-sm run-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>
-            Start
-          </button>
-          <button class="btn btn-outline btn-sm stop-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
-            Stop
-          </button>
-        </div>
-      `;
-      li.querySelector(".run-btn").addEventListener("click", async () => {
-        const onDevice = state.selectedDeviceId ? ` on ${state.selectedDeviceId}` : "";
-        const label = p.target_app
-          ? `Launching ${p.target_app.name}${onDevice}…`
-          : `Starting ${p.name}${onDevice}…`;
-        setAction(label);
-        setAutomationBusy(li, true, label);
-        try {
-          await api(`/api/plugins/${p.id}/run${deviceQuery()}`, { method: "POST" });
-          setAction(`${p.name} running${onDevice}`);
-        } catch (err) {
-          setAction(`${p.name} failed to start: ${err.message}`, "error");
-        }
-        setAutomationBusy(li, false);
-        await refreshAutomationStatus(li, p.id);
-      });
-      li.querySelector(".stop-btn").addEventListener("click", async () => {
-        setAutomationBusy(li, true, `Stopping ${p.name}…`);
-        try {
-          await api(`/api/plugins/${p.id}/stop${deviceQuery()}`, { method: "POST" });
-          setAction(`${p.name} stopped`);
-        } catch (err) {
-          setAction(`${p.name} failed to stop: ${err.message}`, "error");
-        }
-        setAutomationBusy(li, false);
-        await refreshAutomationStatus(li, p.id);
-      });
-      list.appendChild(li);
-      refreshAutomationStatus(li, p.id);
-    }
+    const previous = select.value;
+    fillSelect(select, automations.list, { value: (p) => p.id, label: (p) => `${p.name} (v${p.version})` });
+    if (previous && automations.list.some((p) => p.id === previous)) select.value = previous;
+
+    renderAutomationDetails();
+    await refreshAutomationStatus();
   }
 
   // ---------------------------------------------------------------------
@@ -479,23 +518,52 @@
     }
   }
 
+  const DEP_OK_ICON = `<svg class="dep-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+  const DEP_MISSING_ICON = `<svg class="dep-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+
+  // Renders the Create-Emulator acceptance checklist (Android Studio, SDK,
+  // platform-tools, emulator.exe, sdkmanager, avdmanager) with a checkmark
+  // or cross per item and the exact missing-component reason as a tooltip
+  // — never a single generic "SDK not found" message.
+  function renderDependencies(dependencies) {
+    const list = el("emulator-dependencies");
+    list.innerHTML = "";
+    for (const dep of dependencies) {
+      const li = document.createElement("li");
+      li.className = `dependency-item ${dep.found ? "dep-ok" : "dep-missing"}`;
+      li.title = dep.found ? (dep.path || "") : dep.detail;
+      li.innerHTML = `${dep.found ? DEP_OK_ICON : DEP_MISSING_ICON}<span class="dep-name">${dep.name}</span>${dep.found && dep.path ? `<span class="dep-path">${dep.path}</span>` : ""}`;
+      list.appendChild(li);
+    }
+  }
+
+  function setEmulatorActionsEnabled(enabled) {
+    for (const id of ["emu-btn-create", "emu-btn-start", "emu-btn-stop", "emu-btn-rename", "emu-btn-delete"]) {
+      el(id).disabled = !enabled;
+    }
+  }
+
   async function initEmulatorPanel() {
     try {
       const res = await api("/api/emulator/status");
       const status = await res.json();
+      renderDependencies(status.dependencies || []);
+
       if (!status.available) {
-        el("emulator-sdk-warning").textContent =
-          `Android SDK not found: ${status.error}. Set ANDROID_HOME or install the SDK via Android Studio.`;
+        el("emulator-sdk-warning").textContent = status.error;
         el("emulator-sdk-warning").classList.remove("hidden");
-        setEmulatorStatus("Android SDK unavailable", "error");
+        setEmulatorStatus("Cannot create or run emulators until every dependency above is resolved", "error");
+        setEmulatorActionsEnabled(false);
         return;
       }
       el("emulator-sdk-warning").classList.add("hidden");
+      setEmulatorActionsEnabled(true);
       await Promise.all([loadManufacturers(), loadPerformanceProfiles(), loadAndroidVersions()]);
       await refreshAvds();
       setEmulatorStatus("Ready");
     } catch (err) {
       setEmulatorStatus(`Emulator Manager error: ${err.message}`, "error");
+      setEmulatorActionsEnabled(false);
     }
   }
 
@@ -507,15 +575,60 @@
     await loadDevicesForManufacturer();
   }
 
+  // Same stale-response race as refreshSystemImageStatus below: rapid
+  // manufacturer switching must not let an earlier, slower device-list
+  // response overwrite the dropdown after a later manufacturer was
+  // already selected.
+  let deviceListRequestToken = 0;
+
   async function loadDevicesForManufacturer() {
     const manufacturer = el("emu-manufacturer").value || emu.manufacturer;
     if (!manufacturer) return;
+    const token = ++deviceListRequestToken;
     const res = await api(`/api/emulator/manufacturers/${encodeURIComponent(manufacturer)}/devices`);
-    emu.devices = await res.json();
+    const devices = await res.json();
+    if (token !== deviceListRequestToken) return; // a newer request has since been issued
+    emu.devices = devices;
     fillSelect(el("emu-device"), emu.devices, {
       value: (d) => d.device_name,
       label: (d) => `${d.model} (${d.android_version})`,
     });
+    await refreshSystemImageStatus();
+  }
+
+  // Manufacturer/device changes can fire in quick succession (a
+  // manufacturer switch immediately re-triggers this for its first
+  // device). Without a request token, a slower *earlier* response can
+  // resolve after a faster *later* one and overwrite it with stale
+  // data for whatever is currently selected — exactly the "status
+  // doesn't match real state" bug class this project's ATDD process
+  // guards against. Only the response from the most recently issued
+  // request is ever applied.
+  let systemImageRequestToken = 0;
+
+  async function refreshSystemImageStatus() {
+    const manufacturer = el("emu-manufacturer").value;
+    const deviceName = el("emu-device").value;
+    const target = el("emu-system-image-status");
+    const token = ++systemImageRequestToken;
+    if (!manufacturer || !deviceName) {
+      target.innerHTML = "";
+      return;
+    }
+    try {
+      const res = await api(
+        `/api/emulator/manufacturers/${encodeURIComponent(manufacturer)}/devices/${encodeURIComponent(deviceName)}/system-image`
+      );
+      const { installed } = await res.json();
+      if (token !== systemImageRequestToken) return; // a newer request has since been issued
+      target.className = `dependency-item ${installed ? "dep-ok" : "dep-missing"}`;
+      target.title = installed
+        ? "Required system image is already installed."
+        : "Not installed yet — creating this AVD will download it automatically (can take several minutes).";
+      target.innerHTML = `${installed ? DEP_OK_ICON : DEP_MISSING_ICON}<span class="dep-name">Required system image</span><span class="dep-path">${installed ? "installed" : "will download on create"}</span>`;
+    } catch {
+      if (token === systemImageRequestToken) target.innerHTML = "";
+    }
   }
 
   async function loadPerformanceProfiles() {
@@ -548,6 +661,7 @@
       value: (a) => a.name,
       label: (a) => `${a.name}${a.running ? " (running)" : ""}${a.valid ? "" : " (broken)"}`,
     });
+    syncWindowTitleFromAvd();
   }
 
   async function createAvd() {
@@ -621,6 +735,25 @@
     }
   }
 
+  async function renameAvd() {
+    const name = selectedAvdName();
+    if (!name) return setEmulatorStatus("Select an AVD first", "error");
+    const newName = window.prompt(`Rename "${name}" to:`, name);
+    if (!newName || newName === name) return;
+    setEmulatorStatus(`Renaming ${name} to ${newName}…`, "busy");
+    try {
+      await api(`/api/emulator/avds/${encodeURIComponent(name)}/rename`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_name: newName }),
+      });
+      setEmulatorStatus(`Renamed to ${newName}`, "success");
+      await refreshAvds();
+    } catch (err) {
+      setEmulatorStatus(`Rename failed: ${err.message}`, "error");
+    }
+  }
+
   async function openAndroidStudio() {
     setEmulatorStatus("Opening Android Studio…", "busy");
     try {
@@ -632,21 +765,43 @@
     }
   }
 
+  // Physical Device implies ADB screen capture (the only transport that
+  // makes sense for a real phone); Android Emulator implies direct window
+  // capture, since an AVD is an ordinary desktop window UGAF can grab
+  // pixels from without going through ADB at all. The dropdown stays a
+  // plain <select> so a user can still override this default by hand.
   function setConnectionType(type) {
     const isEmulator = type === "emulator";
     el("emulator-section").classList.toggle("hidden", !isEmulator);
     el("devices-section").classList.toggle("hidden", isEmulator);
-    if (isEmulator && !emu.devices.length) initEmulatorPanel();
+    // Always re-check on every switch to Emulator mode, never only once —
+    // dependency/AVD state can genuinely change between switches (SDK
+    // installed/removed, an AVD created via Android Studio directly), and
+    // a cached "first load only" skip would let the panel show stale
+    // status instead of the real backend state.
+    if (isEmulator) initEmulatorPanel();
+
+    el("capture-provider").value = isEmulator ? "window" : "adb";
+    el("window-title").classList.toggle("hidden", !isEmulator);
+    if (isEmulator) syncWindowTitleFromAvd();
+  }
+
+  function syncWindowTitleFromAvd() {
+    const avdName = el("emu-avd-select").value;
+    if (avdName) el("window-title").value = avdName;
   }
 
   function initConnectionType() {
     el("conn-type-physical").addEventListener("change", () => setConnectionType("physical"));
     el("conn-type-emulator").addEventListener("change", () => setConnectionType("emulator"));
     el("emu-manufacturer").addEventListener("change", loadDevicesForManufacturer);
+    el("emu-device").addEventListener("change", refreshSystemImageStatus);
+    el("emu-avd-select").addEventListener("change", syncWindowTitleFromAvd);
     el("refresh-emulators").addEventListener("click", refreshAvds);
     el("emu-btn-create").addEventListener("click", createAvd);
     el("emu-btn-start").addEventListener("click", startAvd);
     el("emu-btn-stop").addEventListener("click", stopAvd);
+    el("emu-btn-rename").addEventListener("click", renameAvd);
     el("emu-btn-delete").addEventListener("click", deleteAvd);
     el("emu-btn-studio").addEventListener("click", openAndroidStudio);
   }
@@ -689,10 +844,8 @@
   }
 
   function applyZoom(delta) {
-    state.zoom = Math.max(0.25, Math.min(3, state.zoom + delta));
-    el("zoom-level").textContent = `${Math.round(state.zoom * 100)}%`;
-    const img = el("screen-img");
-    if (img.naturalWidth) img.style.width = `${img.naturalWidth * state.zoom}px`;
+    state.zoom = Math.max(0.1, Math.min(3, state.zoom + delta));
+    applyImageSize(el("screen-img"));
   }
 
   function init() {
@@ -712,12 +865,19 @@
     el("capture-provider").addEventListener("change", (evt) => {
       el("window-title").classList.toggle("hidden", evt.target.value !== "window");
     });
+    el("automation-select").addEventListener("change", () => {
+      renderAutomationDetails();
+      refreshAutomationStatus();
+    });
+    el("automation-btn-start").addEventListener("click", startSelectedAutomation);
+    el("automation-btn-stop").addEventListener("click", stopSelectedAutomation);
 
     setInterval(pollLogs, 2000);
     setInterval(() => {
       if (el("auto-refresh").checked && state.selectedDeviceId) captureScreenshot();
     }, 3000);
     setInterval(refreshMetrics, 2000);
+    setInterval(refreshAutomationStatus, 3000);
 
     refreshDevices();
     refreshPlugins();

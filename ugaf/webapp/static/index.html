@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>UGAF Control Panel</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=3" />
 </head>
 <body>
   <div class="app-shell">
@@ -64,6 +64,7 @@
             </button>
           </div>
 
+          <ul id="emulator-dependencies" class="dependency-list"></ul>
           <div id="emulator-sdk-warning" class="banner-warning hidden"></div>
 
           <div class="emulator-form">
@@ -75,6 +76,7 @@
 
             <label class="field-label" for="emu-device">Device</label>
             <select id="emu-device" class="select-field"></select>
+            <div id="emu-system-image-status" class="dependency-item"></div>
 
             <label class="field-label" for="emu-performance">Performance Profile</label>
             <select id="emu-performance" class="select-field"></select>
@@ -90,6 +92,7 @@
             <button id="emu-btn-create" class="btn btn-outline">Create</button>
             <button id="emu-btn-start" class="btn btn-primary">Start</button>
             <button id="emu-btn-stop" class="btn btn-danger-outline">Stop</button>
+            <button id="emu-btn-rename" class="btn btn-outline">Rename</button>
             <button id="emu-btn-delete" class="btn btn-danger-outline">Delete</button>
             <button id="emu-btn-studio" class="btn btn-outline">Open Android Studio</button>
           </div>
@@ -105,7 +108,28 @@
             <h2>Automations</h2>
             <span class="badge" id="automation-count">0</span>
           </div>
-          <ul id="plugin-list" class="automation-list"></ul>
+
+          <label class="field-label" for="automation-select">Automation</label>
+          <select id="automation-select" class="select-field"></select>
+
+          <div id="automation-target-app" class="target-app-chip hidden"></div>
+          <div id="automation-desc" class="automation-desc"></div>
+
+          <div class="emulator-actions">
+            <button id="automation-btn-start" class="btn btn-primary btn-sm">
+              <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+              Start
+            </button>
+            <button id="automation-btn-stop" class="btn btn-outline btn-sm">
+              <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+              Stop
+            </button>
+          </div>
+
+          <div id="automation-status" class="status-banner">
+            <span class="banner-dot"></span>
+            <span id="automation-status-text">Idle</span>
+          </div>
         </section>
       </aside>
 
@@ -200,6 +224,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>

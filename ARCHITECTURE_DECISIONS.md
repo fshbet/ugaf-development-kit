@@ -951,3 +951,114 @@ live-validated against real tooling, not only mocks.
   "not found" rather than launching. Judged acceptable as a convenience button, not a
   load-bearing part of the emulator lifecycle (every AVD operation works from the web
   UI without ever opening Android Studio itself).
+
+---
+
+## ADR-019: Acceptance Test Driven Development (ATDD) for Emulator Management — two real launch-crash root causes and their fixes
+
+- **Status**: Accepted
+- **Date**: 2026-07-05
+
+### Context
+
+A new development directive required treating the emulator lifecycle as a fully
+validated end-to-end workflow — Create, Start (through real boot, launcher visibility,
+live screen, tap/swipe/type), Stop, Rename, Delete — driven through the actual web UI
+exactly as a user would, not just unit tests against mocks. This surfaced two real,
+previously-undiagnosed defects that no amount of mocked testing could have found,
+plus a genuine per-component dependency-detection gap and two UI state-machine bugs.
+
+### Decision
+
+**Dependency detection (`ugaf.emulator.dependencies.EnvironmentChecker`, new)**: prior
+to this directive, `EmulatorManager`'s constructor either fully succeeded or raised on
+the *first* missing tool (via `AndroidSdkLocator.locate()`), giving no way to show a
+user *which* of Android Studio/SDK/platform-tools/emulator.exe/sdkmanager/avdmanager
+is actually missing. `EnvironmentChecker` probes each independently (extending
+`AndroidSdkLocator` with public `find_adb`/`find_emulator`/`find_sdkmanager`/
+`find_avdmanager`, alongside the existing `find_sdk_root`), producing a
+`DependencyReport` the webapp renders as a checklist with real paths or specific,
+actionable "missing" reasons. Android Studio is checked and displayed but never
+blocking — `avdmanager`/`emulator`/`sdkmanager` are plain command-line tools that work
+headlessly without the IDE installed at all; treating Studio as required would break
+UGAF's automation-first use case on headless/CI hosts that intentionally only install
+the SDK.
+
+**`AndroidStudioLocator` bug (real, found immediately)**: the original "Open Android
+Studio" button's candidate paths never found Android Studio on this project's own
+development machine, which has it installed at `E:\Android\Android Studio` — a sibling
+directory of the Android SDK root (`E:\Android\SDK`), not any of the checked
+"well-known" locations. Fixed by checking `ANDROID_STUDIO_HOME`, then the
+sibling-of-SDK-root layout, before falling back to the original per-OS defaults and
+`PATH`. This is exactly the kind of bug ATDD is meant to catch: every previous "review"
+of this code was against assumptions, never the real installed location.
+
+**Emulator launch never reaching boot (real, found via live acceptance testing)**: two
+independent, stacked root causes, each confirmed via direct evidence, not guesses:
+
+1. Launched non-interactively, the emulator tried to show a native "send crash reports
+   to Google?" consent dialog (crashpad's first-run prompt) — a process with no
+   interactive window station to render that dialog on simply exited, silently, before
+   ever starting the AVD, with nothing informative in its own log. Fixed by always
+   passing `-crash-report-mode disabled`.
+2. Even with that fixed, the emulator's shared GPU-capability probe (run regardless of
+   the AVD's own `hw.gpu.mode`) crashed with a real access violation inside
+   `amdxc64.dll` — confirmed via Windows Event Viewer Application-error records
+   (`qemu-system-x86_64.exe` faulting in the AMD graphics driver, exception
+   `0xc0000005`) — on this machine's hybrid NVIDIA+AMD GPU configuration.
+   `-feature -Vulkan` alone did not reliably avoid it; only additionally forcing
+   `-gpu swangle` (ANGLE+SwiftShader for both GLES and Vulkan, overriding the AVD's own
+   `hw.gpu.mode`) was confirmed crash-free across repeated real boots. Both fixes are
+   gated by `AndroidStudioProvider`'s new `disable_vulkan` flag (default `True`,
+   configurable via `emulator_settings.yaml`), so a host that doesn't hit this driver
+   bug and wants real hardware-GPU rendering can opt out.
+
+**UI state-machine bugs (found via ATDD's explicit "never show stale status" check)**:
+
+- `AppSession._get_emulator_manager()` used to cache a *failed* SDK-detection attempt
+  forever — once "SDK not found" was reported, it stayed cached even after a user fixed
+  the underlying problem without restarting the whole webapp. Fixed by only caching
+  *successful* construction; `emulator_status()` now always re-probes live via
+  `EnvironmentChecker` on every call instead of reusing any prior result.
+- The webapp's Connection Type toggle skipped re-checking the Android Emulator panel's
+  status after the very first successful load (`if (isEmulator && !emu.devices.length)`),
+  so switching away and back could show stale dependency/AVD state. Fixed by always
+  re-running the check on every switch to Emulator mode.
+- A genuine race condition: rapid manufacturer/device selection changes could let an
+  earlier, slower "is the system image installed" response resolve *after* a later,
+  faster one and silently overwrite it with stale data for whatever is currently
+  selected. Fixed with a monotonic request-token guard (the same pattern applied to
+  the manufacturer→device-list fetch, which had the identical race).
+- The screen viewer's tap/swipe coordinate math divided by the image element's
+  rendered height with no floor, so an unusually short browser viewport (or this
+  session's browser-automation tooling reporting a transient zero-height layout) could
+  silently compute `y=Infinity`, which JSON serialization turns into `null`, failing
+  the tap/swipe request with a confusing 422 instead of just not acting on a bad click.
+  Fixed with a CSS `max()` floor on `#screen-img`'s height and an explicit zero-rect
+  guard in `imageToDeviceCoords()`.
+
+### Consequences
+
+- Positive: the full Create → Start → boot → launcher-visible → Device-Manager-connected
+  → screenshot-captured → live-screen → tap/swipe/type → Stop → clean-shutdown chain was
+  validated live, multiple times, through the actual web UI against this machine's real
+  Android SDK — not simulated. Every acceptance-checklist item passed with direct
+  evidence (real `sys.boot_completed=1`, real `dumpsys` launcher-foreground checks, real
+  screenshot bytes at the device profile's exact resolution, real ADB disconnection and
+  process exit confirmed via `tasklist`).
+- Positive: two genuine, previously-invisible bugs (the crash-consent dialog, the AMD
+  driver crash) are now fixed with root-caused, evidence-backed explanations rather than
+  trial-and-error flag guessing — both are regression-tested (`start()`'s argument
+  construction is asserted directly) even though the underlying host crash itself can't
+  be reproduced in a unit test.
+- Negative (documented, not solved): the AMD-driver crash fix (`-gpu swangle`) trades
+  away hardware-GPU-accelerated rendering by default on *every* host, not just the ones
+  that hit this specific bug, since there is no reliable way to detect the bug in
+  advance short of trying to boot and watching it crash. A host confirmed not to hit
+  this issue can set `emulator_settings.yaml`'s `disable_vulkan: false` to get
+  hardware-accelerated rendering back.
+- Negative (documented, not solved): "Restart Emulator" is validated as the composition
+  of already-independently-proven `stop()` + `start()` (exercised together, repeatedly,
+  in this same acceptance pass) rather than via a dedicated `restart()` method — judged
+  sufficient since both primitives are independently reliable and a wrapper would add
+  no behavior, only a name.

@@ -58,6 +58,7 @@ class AndroidStudioProvider(EmulatorProvider):
         logger: Logger | None = None,
         first_console_port: int = 5554,
         tool_timeout: float = 30.0,
+        disable_vulkan: bool = True,
     ) -> None:
         """Bind the provider to a resolved SDK installation.
 
@@ -72,6 +73,22 @@ class AndroidStudioProvider(EmulatorProvider):
             tool_timeout: Timeout in seconds for ``avdmanager``/``adb``
                 invocations (not ``emulator`` itself, which is
                 long-running and never awaited synchronously).
+            disable_vulkan: Pass ``-feature -Vulkan -gpu swangle`` on
+                every launch (default ``True``), overriding the AVD's
+                own ``hw.gpu.mode``. A real ATDD acceptance run on this
+                project found the emulator's shared GPU-capability probe
+                crashes with an access violation inside a host AMD
+                graphics driver (``amdxc64.dll``) on a hybrid NVIDIA+AMD
+                laptop — confirmed via Windows Event Viewer crash
+                records, not a guess. ``-feature -Vulkan`` alone did not
+                reliably avoid it (the AVD's own software-rendering
+                ``hw.gpu.mode`` still touched the same driver path);
+                forcing ``-gpu swangle`` (ANGLE+SwiftShader for both
+                GLES and Vulkan) was confirmed crash-free across
+                repeated real boots. Safe default for UGAF's automation
+                use case; set to ``False`` via ``emulator_settings.yaml``'s
+                ``disable_vulkan`` if a host needs real hardware-GPU
+                rendering and doesn't hit this driver bug.
 
         """
         self._sdk_paths = sdk_paths
@@ -79,6 +96,7 @@ class AndroidStudioProvider(EmulatorProvider):
         self._logger = logger or get_logger()
         self._first_console_port = first_console_port
         self._tool_timeout = tool_timeout
+        self._disable_vulkan = disable_vulkan
         self._instances: dict[str, _RunningInstance] = {}
 
     # ------------------------------------------------------------------
@@ -287,7 +305,36 @@ class AndroidStudioProvider(EmulatorProvider):
         workdir.mkdir(parents=True, exist_ok=True)
         log_path = workdir / "emulator.log"
 
-        args = [str(self._sdk_paths.emulator), "-avd", name, "-port", str(console_port)]
+        args = [
+            str(self._sdk_paths.emulator),
+            "-avd",
+            name,
+            "-port",
+            str(console_port),
+            # A real ATDD acceptance run on this project found the emulator
+            # never reaches boot when launched non-interactively: on first
+            # run it tries to show a native "send crash reports to Google?"
+            # consent dialog (crashpad), and a process with no interactive
+            # window station to render that dialog on just exits without
+            # ever starting the AVD -- silently, with no error in its own
+            # log. Disabling crash reporting skips that dialog entirely,
+            # which is also the right default for an automation framework
+            # that always launches emulators unattended.
+            "-crash-report-mode",
+            "disabled",
+        ]
+        if self._disable_vulkan:
+            # See _disable_vulkan's docstring: avoids a real host AMD-driver
+            # crash during the emulator's shared GPU-capability probe.
+            # `-feature -Vulkan` alone was not sufficient to reproduce a
+            # crash-free boot in ATDD acceptance testing -- the AVD's own
+            # `hw.gpu.mode` (e.g. "swiftshader_indirect") still touched the
+            # same buggy driver path during startup regardless. Explicitly
+            # forcing `-gpu swangle` (ANGLE+SwiftShader for both GLES and
+            # Vulkan) overrides that per-AVD setting and was confirmed
+            # crash-free across repeated real boots; `-feature -Vulkan` is
+            # kept alongside it as defense in depth.
+            args.extend(["-feature", "-Vulkan", "-gpu", "swangle"])
         log_file = log_path.open("ab")
         self._logger.info(
             "android_studio_provider.starting",

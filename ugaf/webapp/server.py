@@ -7,6 +7,7 @@ logic lives in this file.
 
 from __future__ import annotations
 
+import asyncio
 import io
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -55,6 +56,12 @@ class ConnectRequest(BaseModel):
 
     capture_provider: str = "adb"
     window_title: str | None = None
+
+
+class RenameAvdRequest(BaseModel):
+    """Request body for renaming an AVD."""
+
+    new_name: str
 
 
 class CreateAvdRequest(BaseModel):
@@ -218,7 +225,16 @@ def create_app(
 
     @app.get("/api/emulator/status")
     async def emulator_status() -> dict[str, Any]:
-        return session.emulator_status()
+        # Probes Android Studio/SDK/tool paths on disk -- run off the
+        # event loop so it never blocks other requests while it does so.
+        return await asyncio.to_thread(session.emulator_status)
+
+    @app.get("/api/emulator/manufacturers/{manufacturer}/devices/{device_name}/system-image")
+    async def check_system_image(manufacturer: str, device_name: str) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(session.check_system_image, manufacturer, device_name)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/emulator/manufacturers")
     async def list_manufacturers() -> list[str]:
@@ -244,22 +260,34 @@ def create_app(
     @app.get("/api/emulator/android-versions")
     async def list_android_versions() -> list[dict[str, Any]]:
         try:
-            return session.list_android_versions()
+            # Shells out to `sdkmanager --list`, which enumerates the entire
+            # catalog (hundreds of packages) and can take a couple of
+            # seconds -- run off the event loop like every other emulator
+            # route that invokes real SDK tooling.
+            return await asyncio.to_thread(session.list_android_versions)
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/emulator/avds")
     async def list_avds() -> list[dict[str, Any]]:
         try:
-            return session.list_avds()
+            return await asyncio.to_thread(session.list_avds)
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.post("/api/emulator/avds")
     async def create_avd(body: CreateAvdRequest) -> dict[str, Any]:
         try:
-            return session.create_avd(
-                body.name, body.manufacturer, body.device_name, body.performance_profile
+            # Creating an AVD may first download a missing system image via
+            # `sdkmanager --install`, which can take minutes -- run in a
+            # worker thread so it never blocks the rest of the control
+            # panel (log polling, device list, other requests) while it runs.
+            return await asyncio.to_thread(
+                session.create_avd,
+                body.name,
+                body.manufacturer,
+                body.device_name,
+                body.performance_profile,
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -267,14 +295,14 @@ def create_app(
     @app.post("/api/emulator/avds/{name}/start")
     async def start_avd(name: str) -> dict[str, Any]:
         try:
-            return session.start_avd(name)
+            return await asyncio.to_thread(session.start_avd, name)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/emulator/avds/{name}/stop")
     async def stop_avd(name: str) -> dict[str, Any]:
         try:
-            session.stop_avd(name)
+            await asyncio.to_thread(session.stop_avd, name)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"stopped": name}
@@ -282,10 +310,18 @@ def create_app(
     @app.delete("/api/emulator/avds/{name}")
     async def delete_avd(name: str) -> dict[str, Any]:
         try:
-            session.delete_avd(name)
+            await asyncio.to_thread(session.delete_avd, name)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"deleted": name}
+
+    @app.post("/api/emulator/avds/{name}/rename")
+    async def rename_avd(name: str, body: RenameAvdRequest) -> dict[str, Any]:
+        try:
+            await asyncio.to_thread(session.rename_avd, name, body.new_name)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"renamed": name, "new_name": body.new_name}
 
     @app.post("/api/emulator/open-android-studio")
     async def open_android_studio() -> dict[str, Any]:

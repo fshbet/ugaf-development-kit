@@ -9,6 +9,7 @@ specific code at all. See ``ARCHITECTURE_DECISIONS.md`` for the ADR.
 """
 
 from ugaf.emulator.android_versions import AndroidVersionManager
+from ugaf.emulator.dependencies import DependencyReport, DependencyStatus, EnvironmentChecker
 from ugaf.emulator.exceptions import (
     AvdAlreadyExistsError,
     AvdNotFoundError,
@@ -26,6 +27,7 @@ from ugaf.emulator.provider import EmulatorProvider
 from ugaf.emulator.provider import emulator_registry as emulator_registry
 from ugaf.emulator.providers.android_studio import AndroidStudioProvider
 from ugaf.emulator.sdk_locator import AndroidSdkLocator, AndroidSdkPaths
+from ugaf.emulator.studio_locator import AndroidStudioLocator
 from ugaf.emulator.types import (
     AvdInfo,
     DeviceProfile,
@@ -42,11 +44,14 @@ emulator_registry.register("android_studio", AndroidStudioProvider)
 __all__ = [
     "AndroidSdkLocator",
     "AndroidSdkPaths",
+    "AndroidStudioLocator",
     "AndroidStudioProvider",
     "AndroidVersionManager",
     "AvdAlreadyExistsError",
     "AvdInfo",
     "AvdNotFoundError",
+    "DependencyReport",
+    "DependencyStatus",
     "DeviceProfile",
     "DeviceProfileManager",
     "EmulatorBootTimeoutError",
@@ -55,6 +60,7 @@ __all__ = [
     "EmulatorManager",
     "EmulatorManagerError",
     "EmulatorProvider",
+    "EnvironmentChecker",
     "HardwareDetector",
     "HardwareInfo",
     "PerformanceProfile",

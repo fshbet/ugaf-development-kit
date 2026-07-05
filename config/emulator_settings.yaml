@@ -7,3 +7,12 @@ emulator:
   first_console_port: 5554
   max_concurrent_instances: 8
   sdk_root: null # null = auto-detect (ANDROID_HOME / ANDROID_SDK_ROOT / default install path)
+  # Forces `-feature -Vulkan -gpu swangle` on every emulator launch,
+  # overriding each AVD's own gpu_mode. Default true: a real ATDD
+  # acceptance run found the emulator crashes (access violation inside
+  # amdxc64.dll) during its shared GPU-capability probe on a hybrid
+  # NVIDIA+AMD host, regardless of the AVD's own gpu_mode -- only forcing
+  # the ANGLE+SwiftShader software backend avoided it reliably. GLES
+  # rendering still works fully. Set to false only if a host needs real
+  # hardware-GPU rendering and doesn't hit this driver bug.
+  disable_vulkan: true

@@ -18,7 +18,9 @@ from ugaf.emulator.types import AvdInfo, EmulatorInstanceHandle
 class _FakeProvider(EmulatorProvider):
     """Minimal in-memory fake provider used to isolate EmulatorManager from any real SDK tool."""
 
-    def __init__(self, sdk_paths, android_versions, logger=None, first_console_port=5554):  # noqa: ANN001
+    def __init__(  # noqa: ANN001
+        self, sdk_paths, android_versions, logger=None, first_console_port=5554, disable_vulkan=True
+    ):
         self.sdk_paths = sdk_paths
         self.avds: dict[str, AvdInfo] = {}
         self.running: set[str] = set()
