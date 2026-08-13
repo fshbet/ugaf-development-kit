@@ -13,6 +13,7 @@ is registered under ``provider_name`` (``"android_studio"`` today).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from ugaf.core.logger import Logger, get_logger
 from ugaf.emulator.android_versions import AndroidVersionManager
 from ugaf.emulator.dependencies import DependencyReport, EnvironmentChecker
 from ugaf.emulator.hardware import HardwareDetector, HardwareInfo
+from ugaf.emulator.naming import sanitize_avd_name
 from ugaf.emulator.performance import PerformanceProfileManager
 from ugaf.emulator.profiles import DeviceProfileManager
 from ugaf.emulator.provider import emulator_registry
@@ -124,6 +126,11 @@ class EmulatorManager:
         """Return the resolved Android SDK tool paths."""
         return self._sdk_paths
 
+    @property
+    def boot_timeout(self) -> float:
+        """Return the configured boot timeout in seconds (``emulator_settings.yaml``)."""
+        return self._boot_timeout
+
     # ------------------------------------------------------------------
     # Dependency / environment checking (ATDD acceptance criteria)
     # ------------------------------------------------------------------
@@ -214,10 +221,27 @@ class EmulatorManager:
         performance_profile_name: str = "mid_range",
         force: bool = False,
     ) -> AvdInfo:
-        """Create a new AVD from a manufacturer/device profile and a performance preset."""
+        """Create a new AVD from a manufacturer/device profile and a performance preset.
+
+        *name* is automatically sanitized into a valid ``avdmanager``
+        identifier (e.g. ``"ROG A15"`` -> ``"ROG_A15"``) -- the user
+        should never need to know or work around ``avdmanager``'s naming
+        rules themselves. When sanitization changed the name, the
+        original is preserved on the returned :class:`AvdInfo`'s
+        ``display_name`` so the UI can still show what the user typed.
+        """
+        sanitized_name = sanitize_avd_name(name)
         device_profile = self.device_profiles.get(manufacturer, device_name)
         performance_profile = self.performance_profiles.get(performance_profile_name)
-        return self._provider.create(name, device_profile, performance_profile, force=force)
+        avd = self._provider.create(
+            sanitized_name, device_profile, performance_profile, force=force
+        )
+        if sanitized_name != name:
+            self._logger.info(
+                "emulator_manager.avd_name_sanitized", requested=name, sanitized=sanitized_name
+            )
+            avd = replace(avd, display_name=name)
+        return avd
 
     def delete(self, name: str) -> None:
         """Stop (if running) and permanently delete an AVD."""

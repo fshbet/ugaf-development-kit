@@ -14,8 +14,33 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from ugaf.emulator.dependencies import DependencyReport, DependencyStatus
 from ugaf.emulator.types import AvdInfo, EmulatorInstanceHandle
 from ugaf.webapp.server import create_app
+
+
+def _ready_dependency_report() -> DependencyReport:
+    """A fully-satisfied DependencyReport, for routes that must reach VALIDATING/STARTING.
+
+    Built explicitly (never probing the real host SDK) so
+    ``AndroidPlatformManager.start_virtual_device``'s pre-flight check
+    passes deterministically regardless of what's actually installed on
+    the machine running these tests.
+    """
+
+    def ok(name: str, path: str) -> DependencyStatus:
+        return DependencyStatus(name, True, path, "")
+
+    return DependencyReport(
+        android_studio=DependencyStatus("Android Studio", False, None, ""),
+        sdk=ok("Android SDK", "/fake/sdk"),
+        platform_tools=ok("Platform Tools (adb)", "/fake/sdk/adb"),
+        emulator=ok("Android Emulator (emulator.exe)", "/fake/sdk/emulator"),
+        sdkmanager=ok("sdkmanager", "/fake/sdk/sdkmanager"),
+        avdmanager=ok("avdmanager", "/fake/sdk/avdmanager"),
+        cmdline_tools_consistency=ok("Command-line Tools Layout", "/fake/sdk/cmdline-tools/latest"),
+        hypervisor=ok("Hypervisor", "WHPX"),
+    )
 
 
 @pytest.fixture
@@ -38,8 +63,14 @@ def emulator_manager() -> MagicMock:
 def client(app, emulator_manager: MagicMock):
     with (
         patch("ugaf.webapp.session.EmulatorManager", return_value=emulator_manager),
+        patch("ugaf.webapp.session.EnvironmentChecker") as checker_cls,
         TestClient(app) as test_client,
     ):
+        # AndroidPlatformManager.start_virtual_device() runs a real
+        # environment_report() pre-flight check (ADR-021) -- give it a
+        # deterministic, always-ready report so route tests never depend
+        # on what's actually installed on the machine running them.
+        checker_cls.return_value.check.return_value = _ready_dependency_report()
         yield test_client
 
 
@@ -56,6 +87,8 @@ def test_emulator_status_reports_full_dependency_list(app) -> None:
         emulator=ok("Android Emulator (emulator.exe)", "/fake/sdk/emulator"),
         sdkmanager=ok("sdkmanager", "/fake/sdk/sdkmanager"),
         avdmanager=ok("avdmanager", "/fake/sdk/avdmanager"),
+        cmdline_tools_consistency=ok("Command-line Tools Layout", "/fake/sdk/cmdline-tools/latest"),
+        hypervisor=ok("Hypervisor", "WHPX"),
     )
     with (
         patch("ugaf.webapp.session.EnvironmentChecker") as checker_cls,
@@ -76,8 +109,14 @@ def test_emulator_status_reports_full_dependency_list(app) -> None:
         "Android Emulator (emulator.exe)",
         "sdkmanager",
         "avdmanager",
+        "Command-line Tools Layout",
+        "Hypervisor",
     ]
     assert body["dependencies"][0]["found"] is False
+    # Environment Doctor device counts, sourced from the same DeviceManager
+    # `/api/devices` uses -- no ADB devices attached in this test environment.
+    assert body["physical_device_count"] == 0
+    assert body["virtual_device_count"] == 0
 
 
 def test_emulator_status_reports_blocking_error_when_sdk_missing(app) -> None:
@@ -93,6 +132,8 @@ def test_emulator_status_reports_blocking_error_when_sdk_missing(app) -> None:
         emulator=missing("Android Emulator (emulator.exe)"),
         sdkmanager=missing("sdkmanager"),
         avdmanager=missing("avdmanager"),
+        cmdline_tools_consistency=missing("Command-line Tools Layout"),
+        hypervisor=missing("Hypervisor"),
     )
     with (
         patch("ugaf.webapp.session.EnvironmentChecker") as checker_cls,
@@ -147,7 +188,7 @@ def test_create_avd_route(client: TestClient, emulator_manager: MagicMock) -> No
         },
     )
     assert res.status_code == 200
-    assert res.json() == {"name": "MyAvd", "valid": True, "error": None}
+    assert res.json() == {"name": "MyAvd", "valid": True, "error": None, "display_name": None}
     emulator_manager.create.assert_called_once_with("MyAvd", "Google", "pixel_9", "mid_range")
 
 

@@ -14,6 +14,20 @@ from unittest.mock import MagicMock
 
 from ugaf.emulator.dependencies import EnvironmentChecker
 from ugaf.emulator.exceptions import SdkNotFoundError
+from ugaf.emulator.hardware import HardwareInfo
+
+
+def _fake_hardware_detector(*, accel_available: bool = True) -> MagicMock:
+    """A HardwareDetector stub reporting a usable acceleration backend by default."""
+    detector = MagicMock()
+    detector.detect.return_value = HardwareInfo(
+        cpu_count=8,
+        total_ram_mb=16384,
+        accel_available=accel_available,
+        accel_backend="WHPX" if accel_available else None,
+        accel_message="(mocked)",
+    )
+    return detector
 
 
 def _fake_locator(*, sdk_root: Path | None = None, missing: set[str] = frozenset()) -> MagicMock:
@@ -29,6 +43,10 @@ def _fake_locator(*, sdk_root: Path | None = None, missing: set[str] = frozenset
         return path
 
     if sdk_root is not None:
+        # A real "cmdline-tools/latest" dir so the (non-mocked) consistency
+        # check reports found -- it inspects the real filesystem, not the
+        # mocked locator.
+        (sdk_root / "cmdline-tools" / "latest").mkdir(parents=True, exist_ok=True)
         locator.find_adb.side_effect = lambda root: _maybe_raise("platform_tools", root / "adb")
         locator.find_emulator.side_effect = lambda root: _maybe_raise("emulator", root / "emulator")
         locator.find_sdkmanager.side_effect = lambda root: _maybe_raise(
@@ -46,7 +64,7 @@ def test_all_dependencies_found_reports_ready(tmp_path: Path) -> None:
     studio_locator = MagicMock()
     studio_locator.locate.return_value = tmp_path / "studio" / "studio64.exe"
 
-    report = EnvironmentChecker(locator, studio_locator).check()
+    report = EnvironmentChecker(locator, studio_locator, _fake_hardware_detector()).check()
 
     assert report.ready is True
     assert report.first_missing() is None
@@ -58,7 +76,7 @@ def test_missing_sdk_cascades_to_every_downstream_tool(tmp_path: Path) -> None:
     studio_locator = MagicMock()
     studio_locator.locate.return_value = None
 
-    report = EnvironmentChecker(locator, studio_locator).check()
+    report = EnvironmentChecker(locator, studio_locator, _fake_hardware_detector()).check()
 
     assert report.ready is False
     assert report.sdk.found is False
@@ -78,7 +96,7 @@ def test_single_missing_tool_does_not_hide_the_others(tmp_path: Path) -> None:
     studio_locator = MagicMock()
     studio_locator.locate.return_value = None
 
-    report = EnvironmentChecker(locator, studio_locator).check()
+    report = EnvironmentChecker(locator, studio_locator, _fake_hardware_detector()).check()
 
     assert report.ready is False
     assert report.sdk.found is True
@@ -98,7 +116,7 @@ def test_android_studio_missing_is_reported_but_never_blocks(tmp_path: Path) -> 
     studio_locator = MagicMock()
     studio_locator.locate.return_value = None
 
-    report = EnvironmentChecker(locator, studio_locator).check()
+    report = EnvironmentChecker(locator, studio_locator, _fake_hardware_detector()).check()
 
     assert report.android_studio.found is False
     assert report.ready is True  # Studio absence is not blocking.
@@ -112,7 +130,7 @@ def test_android_studio_found_is_reported(tmp_path: Path) -> None:
     studio_locator = MagicMock()
     studio_locator.locate.return_value = studio_path
 
-    report = EnvironmentChecker(locator, studio_locator).check()
+    report = EnvironmentChecker(locator, studio_locator, _fake_hardware_detector()).check()
 
     assert report.android_studio.found is True
     assert report.android_studio.path == str(studio_path)
@@ -124,7 +142,7 @@ def test_as_list_includes_android_studio_first(tmp_path: Path) -> None:
     studio_locator = MagicMock()
     studio_locator.locate.return_value = None
 
-    report = EnvironmentChecker(locator, studio_locator).check()
+    report = EnvironmentChecker(locator, studio_locator, _fake_hardware_detector()).check()
     names = [s.name for s in report.as_list()]
     assert names == [
         "Android Studio",
@@ -133,4 +151,49 @@ def test_as_list_includes_android_studio_first(tmp_path: Path) -> None:
         "Android Emulator (emulator.exe)",
         "sdkmanager",
         "avdmanager",
+        "Command-line Tools Layout",
+        "Hypervisor",
     ]
+
+
+def test_cmdline_tools_consistency_found_with_latest_dir(tmp_path: Path) -> None:
+    sdk_root = tmp_path / "sdk"
+    locator = _fake_locator(sdk_root=sdk_root)
+    studio_locator = MagicMock()
+    studio_locator.locate.return_value = None
+
+    report = EnvironmentChecker(locator, studio_locator, _fake_hardware_detector()).check()
+
+    assert report.cmdline_tools_consistency.found is True
+
+
+def test_cmdline_tools_consistency_flags_ambiguous_multi_version_layout(tmp_path: Path) -> None:
+    sdk_root = tmp_path / "sdk"
+    locator = _fake_locator(sdk_root=sdk_root)
+    (sdk_root / "cmdline-tools" / "latest").rmdir()
+    (sdk_root / "cmdline-tools" / "9.0").mkdir(parents=True)
+    (sdk_root / "cmdline-tools" / "12.0").mkdir(parents=True)
+    studio_locator = MagicMock()
+    studio_locator.locate.return_value = None
+
+    report = EnvironmentChecker(locator, studio_locator, _fake_hardware_detector()).check()
+
+    assert report.cmdline_tools_consistency.found is False
+    assert "9.0" in report.cmdline_tools_consistency.detail
+    assert "12.0" in report.cmdline_tools_consistency.detail
+    # Not blocking -- overall readiness is unaffected.
+    assert report.ready is True
+
+
+def test_hypervisor_unavailable_is_reported_but_not_blocking(tmp_path: Path) -> None:
+    sdk_root = tmp_path / "sdk"
+    locator = _fake_locator(sdk_root=sdk_root)
+    studio_locator = MagicMock()
+    studio_locator.locate.return_value = None
+
+    report = EnvironmentChecker(
+        locator, studio_locator, _fake_hardware_detector(accel_available=False)
+    ).check()
+
+    assert report.hypervisor.found is False
+    assert report.ready is True

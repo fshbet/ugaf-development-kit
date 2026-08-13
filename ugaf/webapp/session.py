@@ -11,22 +11,27 @@ delegation to an existing manager.
 from __future__ import annotations
 
 import logging
-import os
-import shutil
-import subprocess
-import sys
 from collections import deque
 from pathlib import Path
 from typing import Any
 
+from ugaf.android_platform import AndroidPlatformManager
 from ugaf.apps.types import AppDefinition
 from ugaf.core.bootstrap import Application
 from ugaf.core.config import Config
-from ugaf.emulator import EmulatorManager, EnvironmentChecker
+from ugaf.core.logger import get_logger
+from ugaf.device.lifecycle import DeviceLifecycle, DeviceState
+from ugaf.emulator import (
+    EmulatorBootTimeoutError,
+    EmulatorManager,
+    EmulatorManagerError,
+    EnvironmentChecker,
+)
+from ugaf.emulator.boot_diagnostics import BootMonitor
 from ugaf.imaging.image import Image
 from ugaf.imaging.manager import ImagingManager
 from ugaf.input.manager import InputManager
-from ugaf.platform.device import DeviceInfo
+from ugaf.platform.device import DeviceInfo, DeviceStatus
 from ugaf.sdk.state import GameState
 from ugaf.vision.adb_screenshot import AdbScreenshotProvider
 from ugaf.vision.exceptions import ScreenshotError
@@ -34,18 +39,33 @@ from ugaf.vision.screenshot import ScreenshotProvider
 from ugaf.vision.screenshot_manager import ScreenshotManager
 from ugaf.vision.window_capture import WindowCaptureProvider
 
-_ANDROID_STUDIO_CANDIDATES = (
-    r"%LOCALAPPDATA%\Programs\Android Studio\bin\studio64.exe",
-    r"C:\Program Files\Android\Android Studio\bin\studio64.exe",
-    r"C:\Program Files (x86)\Android\Android Studio\bin\studio64.exe",
-)
-
 _DEFAULT_GAMES_DIR = Path("games")
+
+# Owner tag recorded on every DeviceLifecycle transition inside the
+# device-connect boot sequence (ADR-023's logging requirement: every
+# transition must be attributable to the component that drove it).
+_BOOT_OWNER = "AppSession.connect_device"
 
 __all__ = [
     "AppSession",
     "DeviceConnection",
+    "DeviceRecoveryError",
 ]
+
+
+class DeviceRecoveryError(Exception):
+    """Raised when a device cannot be brought to ``READY`` via the boot-sequence pipeline.
+
+    Carries the pipeline *stage* that failed so API/UI callers can
+    show a precise diagnostic instead of a bare "not connected".
+    """
+
+    def __init__(self, device_id: str, stage: str, reason: str) -> None:
+        """Record which pipeline stage failed and why."""
+        super().__init__(reason)
+        self.device_id = device_id
+        self.stage = stage
+        self.reason = reason
 
 
 class _LogBufferHandler(logging.Handler):
@@ -112,10 +132,14 @@ class AppSession:
         self.app = Application(config_path=config_path, games_dir=games_dir)
         self._games_dir = Path(games_dir) if games_dir else _DEFAULT_GAMES_DIR
         self._connections: dict[str, DeviceConnection] = {}
+        self._connect_options: dict[str, tuple[str, str | None]] = {}
+        self._lifecycle = DeviceLifecycle()
         self._imaging = ImagingManager()
         self.log_buffer: deque[dict[str, Any]] = deque(maxlen=log_buffer_size)
         self._log_handler = _LogBufferHandler(self.log_buffer)
         self._emulator_manager: EmulatorManager | None = None
+        self._platform_manager: AndroidPlatformManager | None = None
+        self._boot_monitor = BootMonitor()
 
     async def start(self) -> None:
         """Initialize and start the underlying Application, and begin log capture.
@@ -145,8 +169,41 @@ class AppSession:
         return self.app.device_manager.discover()
 
     def is_connected(self, device_id: str) -> bool:
-        """Return whether *device_id* has an active session connection."""
-        return device_id in self._connections
+        """Return whether *device_id* is authoritatively ``READY``.
+
+        Backed entirely by :class:`~ugaf.device.lifecycle.DeviceLifecycle`
+        (ADR-020) — there is no independent "connected" flag anymore,
+        so this can never disagree with :meth:`device_state`.
+        """
+        return self._lifecycle.is_ready(device_id)
+
+    def device_state(self, device_id: str) -> str:
+        """Return the single authoritative lifecycle state for *device_id*."""
+        return self._lifecycle.get(device_id).state.value
+
+    def device_state_reason(self, device_id: str) -> str:
+        """Return the human-readable reason for *device_id*'s current state."""
+        return self._lifecycle.get(device_id).reason
+
+    def boot_timeline(self, device_id: str) -> list[dict[str, Any]]:
+        """Return *device_id*'s current-episode lifecycle transition history.
+
+        Powers the webapp's Boot Timeline panel: every transition since
+        the current connect/boot attempt began, each attributed to the
+        component that drove it and timestamped with elapsed time --
+        per ADR-023's logging requirement that any failure be
+        reproducible from the transition history alone.
+        """
+        return [
+            {
+                "state": snapshot.state.value,
+                "reason": snapshot.reason,
+                "owner": snapshot.owner,
+                "elapsed_seconds": snapshot.elapsed_seconds,
+                "updated_at": snapshot.updated_at,
+            }
+            for snapshot in self._lifecycle.history(device_id)
+        ]
 
     def connect_device(
         self,
@@ -154,14 +211,19 @@ class AppSession:
         capture_provider: str = "adb",
         window_title: str | None = None,
     ) -> None:
-        """Create and connect an InputManager + ScreenshotManager for *device_id*.
+        """Run the full boot-sequence pipeline and bring *device_id* to ``READY``.
 
-        A no-op if already connected. Input always goes over ADB
+        A no-op if already ``READY``. Input always goes over ADB
         (input injection, device control, and app lifecycle stay on
         ADB per ``ARCHITECTURE.md``) rather than trusting the shared
         framework config's ``input.provider`` (which defaults to
         ``windows``, meant for desktop input automation in a
         different context) — only the *frame source* is selectable.
+
+        Per ADR-020, "connected" is no longer declared the instant
+        objects are constructed: the device must actually be reachable
+        via ADB, finished booting, and produce a real test screenshot
+        before the UI is told it is ``READY``.
 
         Args:
             device_id: The device to connect to.
@@ -175,29 +237,169 @@ class AppSession:
                 substring match).
 
         Raises:
-            ScreenshotError: If *capture_provider* is ``"window"`` and
-                *window_title* is not given, or the capture transport
-                itself is unavailable/misconfigured.
+            DeviceRecoveryError: If any stage of the boot sequence
+                fails, naming the stage and the reason.
 
         """
-        if device_id in self._connections:
+        if self._lifecycle.is_ready(device_id) and device_id in self._connections:
             return
+        self._connect_options[device_id] = (capture_provider, window_title)
+        self._run_boot_sequence(device_id, capture_provider, window_title)
 
+    def _run_boot_sequence(
+        self, device_id: str, capture_provider: str, window_title: str | None
+    ) -> None:
+        """Execute the documented boot sequence, transitioning through every state.
+
+        Launch Emulator (already done by the caller, e.g. Start AVD) ->
+        Wait for emulator process (implied by ADB visibility) ->
+        ``adb wait-for-device`` (WAITING_FOR_ADB) ->
+        ``sys.boot_completed == 1`` + launcher visible + unlock screen (BOOTING) ->
+        Initialize Screenshot Provider (INITIALIZING) ->
+        Capture test screenshot (CAPTURING_TEST_FRAME) ->
+        Test tap injection (TESTING_INPUT) ->
+        Mark Device Ready (READY).
+
+        Any existing partial connection is torn down before retrying,
+        so recovery attempts never leak stale managers.
+
+        Raises:
+            ScreenshotError: If *capture_provider*/*window_title* are
+                invalid — a client request-validation error, distinct
+                from a pipeline/recovery failure, so it is not wrapped
+                as a :class:`DeviceRecoveryError`.
+
+        """
+        # Validate the request shape before touching the lifecycle at all:
+        # an unknown capture_provider or a missing window_title is a bad
+        # request, not a device that failed to recover.
+        capture = self._build_capture_provider(device_id, capture_provider, window_title)
+
+        lifecycle = self._lifecycle
+        stale = self._connections.pop(device_id, None)
+        if stale is not None:
+            stale.input_manager.disconnect()
+
+        lifecycle.transition(
+            device_id, DeviceState.STARTING, "connect/recovery requested", owner=_BOOT_OWNER
+        )
+
+        assert self.app.device_manager is not None
+        lifecycle.transition(
+            device_id, DeviceState.WAITING_FOR_ADB, "checking ADB reachability", owner=_BOOT_OWNER
+        )
+        device = next((d for d in self.app.device_manager.discover() if d.id == device_id), None)
+        if device is None:
+            lifecycle.transition(
+                device_id, DeviceState.ERROR, "device not found by ADB", owner=_BOOT_OWNER
+            )
+            raise DeviceRecoveryError(
+                device_id, "waiting_for_adb", f"Device {device_id!r} not found by ADB"
+            )
+        if device.status is not DeviceStatus.ONLINE:
+            reason = f"device is {device.status.value} (expected online)"
+            lifecycle.transition(device_id, DeviceState.ERROR, reason, owner=_BOOT_OWNER)
+            raise DeviceRecoveryError(device_id, "waiting_for_adb", reason.capitalize())
+
+        lifecycle.transition(
+            device_id, DeviceState.BOOTING, "verifying boot completion", owner=_BOOT_OWNER
+        )
+        try:
+            booted = self._is_boot_completed(device_id)
+        except Exception as exc:  # noqa: BLE001 - surfaced as a diagnostic, not raised raw
+            reason = f"could not query boot state: {exc}"
+            lifecycle.transition(device_id, DeviceState.ERROR, reason, owner=_BOOT_OWNER)
+            raise DeviceRecoveryError(device_id, "booting", reason) from exc
+        if not booted:
+            reason = "sys.boot_completed != 1"
+            lifecycle.transition(device_id, DeviceState.ERROR, reason, owner=_BOOT_OWNER)
+            raise DeviceRecoveryError(device_id, "booting", "Device has not finished booting")
+        self._unlock_screen(device_id)
+
+        lifecycle.transition(
+            device_id,
+            DeviceState.INITIALIZING,
+            "starting input/screenshot providers",
+            owner=_BOOT_OWNER,
+        )
         adb_config = Config.from_dict({"input": {"provider": "adb"}})
-
         input_manager = InputManager(
             adb_config,
             device_id=device_id,
             device_manager=self.app.device_manager,
         )
-        input_manager.connect()
+        try:
+            input_manager.connect()
+            screenshot = ScreenshotManager(imaging=self._imaging)
+            screenshot.connect_with(capture)
+        except Exception as exc:
+            reason = f"provider initialization failed: {exc}"
+            lifecycle.transition(device_id, DeviceState.ERROR, reason, owner=_BOOT_OWNER)
+            raise DeviceRecoveryError(device_id, "initializing", reason) from exc
 
-        screenshot = ScreenshotManager(imaging=self._imaging)
-        screenshot.connect_with(
-            self._build_capture_provider(device_id, capture_provider, window_title)
+        lifecycle.transition(
+            device_id,
+            DeviceState.CAPTURING_TEST_FRAME,
+            "capturing test screenshot",
+            owner=_BOOT_OWNER,
         )
+        try:
+            screenshot.capture_full()
+        except Exception as exc:
+            input_manager.disconnect()
+            reason = f"test screenshot failed: {exc}"
+            lifecycle.transition(device_id, DeviceState.ERROR, reason, owner=_BOOT_OWNER)
+            raise DeviceRecoveryError(device_id, "capturing_test_frame", reason) from exc
+
+        lifecycle.transition(
+            device_id, DeviceState.TESTING_INPUT, "testing tap injection", owner=_BOOT_OWNER
+        )
+        try:
+            input_manager.click(1, 1)
+        except Exception as exc:
+            input_manager.disconnect()
+            reason = f"test tap failed: {exc}"
+            lifecycle.transition(device_id, DeviceState.ERROR, reason, owner=_BOOT_OWNER)
+            raise DeviceRecoveryError(device_id, "testing_input", reason) from exc
 
         self._connections[device_id] = DeviceConnection(device_id, input_manager, screenshot)
+        lifecycle.transition(
+            device_id, DeviceState.READY, "boot sequence complete", owner=_BOOT_OWNER
+        )
+
+    def _unlock_screen(self, device_id: str) -> None:
+        """Best-effort wake + dismiss the lock screen so automation isn't blocked by it.
+
+        Sends ``KEYCODE_WAKEUP`` then ``KEYCODE_MENU`` -- dismisses a
+        swipe-to-unlock (no PIN/pattern) lock screen, the default on a
+        freshly created AVD. Never fatal: many devices have no lock
+        screen active at all (already unlocked, or boot completed
+        straight to the launcher), and PIN/pattern-protected lock
+        screens can't be bypassed this way regardless -- this is a
+        convenience for the common case, not a security bypass.
+        """
+        assert self.app.device_manager is not None
+        try:
+            self.app.device_manager.shell_sync(device_id, "input", "keyevent", "224")
+            self.app.device_manager.shell_sync(device_id, "input", "keyevent", "82")
+        except Exception as exc:  # noqa: BLE001 - unlocking is best-effort, never blocks boot
+            get_logger().warning(
+                "app_session.unlock_screen_failed", device=device_id, error=str(exc)
+            )
+
+    def _is_boot_completed(self, device_id: str) -> bool:
+        """Check ``sys.boot_completed`` and launcher visibility over ADB."""
+        assert self.app.device_manager is not None
+        boot_prop = self.app.device_manager.shell_sync(device_id, "getprop", "sys.boot_completed")
+        if boot_prop.strip() != "1":
+            return False
+        try:
+            focus = self.app.device_manager.shell_sync(
+                device_id, "dumpsys", "window", "|", "grep", "mCurrentFocus"
+            )
+        except Exception:  # noqa: BLE001 - launcher check is best-effort, boot_completed already confirmed
+            return True
+        return "Launcher" in focus or "launcher" in focus or focus.strip() != ""
 
     def _build_capture_provider(
         self, device_id: str, capture_provider: str, window_title: str | None
@@ -219,10 +421,31 @@ class AppSession:
         connection = self._connections.pop(device_id, None)
         if connection is not None:
             connection.input_manager.disconnect()
+        self._connect_options.pop(device_id, None)
+        self._lifecycle.transition(
+            device_id,
+            DeviceState.DISCONNECTED,
+            "disconnect requested",
+            owner="AppSession.disconnect_device",
+        )
 
-    def _require_connection(self, device_id: str) -> DeviceConnection:
-        if device_id not in self._connections:
-            raise KeyError(f"Device {device_id!r} is not connected")
+    def _ensure_ready(self, device_id: str) -> DeviceConnection:
+        """Return *device_id*'s connection, auto-recovering if lifecycle state is stale.
+
+        Never fails purely because an internal flag is stale: if the
+        device is not currently ``READY``, the full boot sequence is
+        re-run once. Only a genuine pipeline failure (device
+        unreachable, still booting, provider init/test-capture
+        failure) results in an error — and that error names exactly
+        which stage failed via :class:`DeviceRecoveryError`, per
+        ADR-020's "revalidate, attempt recovery, only then report a
+        diagnostic" requirement.
+        """
+        if self._lifecycle.is_ready(device_id) and device_id in self._connections:
+            return self._connections[device_id]
+
+        capture_provider, window_title = self._connect_options.get(device_id, ("adb", None))
+        self._run_boot_sequence(device_id, capture_provider, window_title)
         return self._connections[device_id]
 
     def device_metrics(self, device_id: str) -> dict[str, Any]:
@@ -233,7 +456,7 @@ class AppSession:
         input latency, so the UI can compare transports on equal
         footing.
         """
-        connection = self._require_connection(device_id)
+        connection = self._ensure_ready(device_id)
         return {
             "capture": connection.screenshot.metrics.as_dict(),
             "input": connection.input_manager.metrics.as_dict(),
@@ -244,8 +467,8 @@ class AppSession:
     # ------------------------------------------------------------------
 
     def capture(self, device_id: str) -> Image:
-        """Capture the current screen for a connected device."""
-        return self._require_connection(device_id).screenshot.capture_full()
+        """Capture the current screen for a connected device, auto-recovering first if needed."""
+        return self._ensure_ready(device_id).screenshot.capture_full()
 
     def encode_png(self, image: Image) -> bytes:
         """Encode a captured Image as PNG bytes for HTTP responses."""
@@ -253,15 +476,15 @@ class AppSession:
 
     def tap(self, device_id: str, x: int, y: int) -> None:
         """Tap coordinates on a connected device."""
-        self._require_connection(device_id).input_manager.click(x, y)
+        self._ensure_ready(device_id).input_manager.click(x, y)
 
     def swipe(self, device_id: str, x1: int, y1: int, x2: int, y2: int, duration: float) -> None:
         """Swipe/drag on a connected device."""
-        self._require_connection(device_id).input_manager.drag(x1, y1, x2, y2, duration=duration)
+        self._ensure_ready(device_id).input_manager.drag(x1, y1, x2, y2, duration=duration)
 
     def type_text(self, device_id: str, text: str) -> None:
         """Type text on a connected device."""
-        self._require_connection(device_id).input_manager.type_text(text)
+        self._ensure_ready(device_id).input_manager.type_text(text)
 
     # ------------------------------------------------------------------
     # Automations (game/app plugins)
@@ -394,26 +617,59 @@ class AppSession:
             self._emulator_manager = EmulatorManager()
         return self._emulator_manager
 
+    def _get_platform_manager(self) -> AndroidPlatformManager:
+        """Lazily build the :class:`~ugaf.android_platform.AndroidPlatformManager`.
+
+        Wraps whatever :meth:`_get_emulator_manager` currently holds
+        (so it shares the exact same success/failure caching behavior)
+        together with the shared :class:`DeviceLifecycle` -- see
+        ADR-021. Rebuilt each call since it's a cheap facade over
+        already-cached managers; only ``_emulator_manager`` itself is
+        the expensive-to-construct part.
+        """
+        assert self.app.device_manager is not None
+        return AndroidPlatformManager(
+            self._get_emulator_manager(),
+            self.app.device_manager,
+            self._lifecycle,
+            environment_checker=EnvironmentChecker(),
+        )
+
     def emulator_status(self) -> dict[str, Any]:
-        """Return live per-dependency status (Android Studio/SDK/tools), never cached.
+        """Return the live Android Platform "Environment Doctor" report, never cached.
 
         Always re-probes the real environment (see
         :class:`~ugaf.emulator.dependencies.EnvironmentChecker`) instead
         of reusing a previous result, so a status that was true a
         minute ago (e.g. "Android Studio not found") cannot linger after
-        the real state changes.
+        the real state changes. Physical/virtual device counts come
+        straight from :class:`~ugaf.device.manager.DeviceManager` --
+        the same single source of truth ``/api/devices`` uses -- never a
+        second, independent device count.
         """
         report = EnvironmentChecker().check()
         dependencies = [
-            {"name": s.name, "found": s.found, "path": s.path, "detail": s.detail}
+            {
+                "name": s.name,
+                "found": s.found,
+                "path": s.path,
+                "detail": s.detail,
+                "version": s.version,
+            }
             for s in report.as_list()
         ]
         blocking = report.first_missing()
+        assert self.app.device_manager is not None
+        devices = self.app.device_manager.discover()
+        virtual_count = sum(1 for d in devices if d.id.startswith("emulator-"))
+        physical_count = len(devices) - virtual_count
         return {
             "available": report.ready,
             "sdk_root": report.sdk.path,
             "error": blocking.detail if blocking else None,
             "dependencies": dependencies,
+            "physical_device_count": physical_count,
+            "virtual_device_count": virtual_count,
         }
 
     def list_manufacturers(self) -> list[str]:
@@ -485,11 +741,23 @@ class AppSession:
         """Create a new AVD from a manufacturer/device profile and performance preset."""
         manager = self._get_emulator_manager()
         avd = manager.create(name, manufacturer, device_name, performance_profile)
-        return {"name": avd.name, "valid": avd.valid, "error": avd.error}
+        return {
+            "name": avd.name,
+            "valid": avd.valid,
+            "error": avd.error,
+            "display_name": avd.display_name,
+        }
 
     def start_avd(self, name: str) -> dict[str, Any]:
-        """Launch an AVD as a new emulator instance."""
-        handle = self._get_emulator_manager().start(name)
+        """Validate prerequisites and launch an AVD as a new emulator instance.
+
+        Routed through :class:`~ugaf.android_platform.AndroidPlatformManager`
+        so the ``VALIDATING`` -> ``STARTING`` lifecycle transitions are
+        recorded on the same authoritative :class:`DeviceLifecycle` the
+        device-connect pipeline uses (ADR-021) — never a second,
+        independent notion of "starting".
+        """
+        handle = self._get_platform_manager().start_virtual_device(name)
         return {
             "name": handle.name,
             "adb_serial": handle.adb_serial,
@@ -497,36 +765,96 @@ class AppSession:
             "adb_port": handle.adb_port,
         }
 
+    def create_and_ready_avd(
+        self,
+        name: str,
+        manufacturer: str,
+        device_name: str,
+        performance_profile: str = "mid_range",
+        capture_provider: str = "adb",
+        window_title: str | None = None,
+    ) -> dict[str, Any]:
+        """One-click Virtual Device: create -> validate -> boot -> connect -> READY.
+
+        Per ADR-022, this is the single action the "Create Virtual
+        Device" button performs — no intermediate manual Start/Connect
+        clicks. Composes already-existing, independently-tested pieces
+        rather than duplicating their logic:
+
+        1. :meth:`~ugaf.android_platform.AndroidPlatformManager.create_virtual_device`
+           (auto-sanitizes the name, auto-downloads the system image if
+           missing).
+        2. :meth:`~ugaf.android_platform.AndroidPlatformManager.start_virtual_device`
+           (validates every blocking SDK dependency before launching).
+        3. :class:`~ugaf.emulator.boot_diagnostics.BootMonitor` — per
+           ADR-023, replaces a bare boolean "did it boot" check with a
+           staged diagnostic identifying exactly which boot signal never
+           arrived (emulator process, ADB visibility, boot-completion
+           properties, boot animation, or launcher) if it doesn't.
+        4. :meth:`connect_device` — the full ADR-020/ADR-022 boot-sequence
+           pipeline (wait-for-ADB, boot-completion, screen unlock,
+           provider init, test screenshot, test tap, ``READY``).
+
+        Raises:
+            EmulatorManagerError: If creation produces an invalid AVD.
+            EmulatorBootTimeoutError: If the emulator does not reach a
+                fully-booted state in time — carries the exact failed
+                stage and full :class:`~ugaf.emulator.boot_diagnostics.BootDiagnostics`.
+            DeviceRecoveryError: If any stage of the device-connect
+                pipeline fails once ADB-reachable.
+
+        """
+        platform = self._get_platform_manager()
+        avd = platform.create_virtual_device(name, manufacturer, device_name, performance_profile)
+        if not avd.valid:
+            raise EmulatorManagerError(f"Virtual Device creation failed: {avd.error}")
+
+        # A "window" capture provider needs the emulator window's title,
+        # which is always the (possibly sanitized) AVD name -- the caller
+        # can't know that in advance for a brand-new AVD, so default it
+        # here rather than requiring a second round-trip.
+        if capture_provider == "window" and not window_title:
+            window_title = avd.name
+
+        handle = platform.start_virtual_device(avd.name)
+
+        emulator_manager = self._get_emulator_manager()
+        assert self.app.device_manager is not None
+        diagnostics = self._boot_monitor.wait_for_boot(
+            self.app.device_manager,
+            emulator_manager,
+            avd.name,
+            handle.adb_serial,
+            timeout=emulator_manager.boot_timeout,
+        )
+        if diagnostics.failed_stage is not None:
+            raise EmulatorBootTimeoutError(
+                f"Virtual Device {avd.name!r} did not finish booting: "
+                f"stuck at stage {diagnostics.failed_stage!r} after "
+                f"{diagnostics.elapsed_seconds:.0f}s. {diagnostics.recommended_action}",
+                failed_stage=diagnostics.failed_stage,
+                diagnostics=diagnostics,
+            )
+
+        self.connect_device(
+            handle.adb_serial, capture_provider=capture_provider, window_title=window_title
+        )
+
+        return {
+            "device_id": handle.adb_serial,
+            "avd_name": avd.name,
+            "display_name": avd.display_name,
+            "state": self.device_state(handle.adb_serial),
+        }
+
     def stop_avd(self, name: str) -> None:
         """Gracefully shut down a running AVD."""
-        self._get_emulator_manager().stop(name)
+        self._get_platform_manager().stop_virtual_device(name)
 
     def delete_avd(self, name: str) -> None:
         """Permanently delete an AVD."""
-        self._get_emulator_manager().delete(name)
+        self._get_platform_manager().delete_virtual_device(name)
 
     def rename_avd(self, name: str, new_name: str) -> None:
         """Rename an AVD."""
         self._get_emulator_manager().rename(name, new_name)
-
-    def open_android_studio(self) -> bool:
-        """Best-effort launch of the Android Studio IDE, if found at a well-known path.
-
-        Returns:
-            ``True`` if a launch was attempted, ``False`` if Android
-            Studio could not be located.
-
-        """
-        if sys.platform != "win32":
-            found = shutil.which("studio") or shutil.which("android-studio")
-            if not found:
-                return False
-            subprocess.Popen([found])
-            return True
-
-        for candidate in _ANDROID_STUDIO_CANDIDATES:
-            path = Path(os.path.expandvars(candidate))
-            if path.is_file():
-                subprocess.Popen([str(path)])
-                return True
-        return False

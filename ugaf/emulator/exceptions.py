@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ugaf.core.exceptions import UGAFError
+
+if TYPE_CHECKING:
+    from ugaf.emulator.boot_diagnostics import BootDiagnostics
 
 __all__ = [
     "AvdAlreadyExistsError",
@@ -36,7 +41,25 @@ class EmulatorCommandError(EmulatorManagerError):
 
 
 class EmulatorBootTimeoutError(EmulatorManagerError):
-    """Raised when an emulator instance does not finish booting within budget."""
+    """Raised when an emulator instance does not finish booting within budget.
+
+    Carries the exact stage that never completed and a snapshot of every
+    boot signal collected up to the timeout (see
+    :class:`~ugaf.android_platform.boot_diagnostics.BootDiagnostics`) --
+    "did not finish booting" alone is exactly the unhelpful generic
+    message this exception exists to replace (ADR-023).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        failed_stage: str | None = None,
+        diagnostics: BootDiagnostics | None = None,
+    ) -> None:
+        """Record the message plus, when available, which stage failed and full diagnostics."""
+        super().__init__(message)
+        self.failed_stage = failed_stage
+        self.diagnostics = diagnostics
 
 
 class SystemImageNotAvailableError(EmulatorManagerError):

@@ -64,6 +64,7 @@
             </button>
           </div>
 
+          <div id="platform-health-summary" class="dependency-item"></div>
           <ul id="emulator-dependencies" class="dependency-list"></ul>
           <div id="emulator-sdk-warning" class="banner-warning hidden"></div>
 
@@ -81,10 +82,10 @@
             <label class="field-label" for="emu-performance">Performance Profile</label>
             <select id="emu-performance" class="select-field"></select>
 
-            <label class="field-label" for="emu-avd-name">New AVD Name</label>
-            <input type="text" id="emu-avd-name" class="text-field" placeholder="e.g. GalaxyS25Ultra_01" />
+            <label class="field-label" for="emu-avd-name">New Virtual Device Name</label>
+            <input type="text" id="emu-avd-name" class="text-field" placeholder="e.g. Galaxy S25 Ultra" />
 
-            <label class="field-label" for="emu-avd-select">AVD</label>
+            <label class="field-label" for="emu-avd-select">Virtual Device</label>
             <select id="emu-avd-select" class="select-field"></select>
           </div>
 
@@ -94,12 +95,11 @@
             <button id="emu-btn-stop" class="btn btn-danger-outline">Stop</button>
             <button id="emu-btn-rename" class="btn btn-outline">Rename</button>
             <button id="emu-btn-delete" class="btn btn-danger-outline">Delete</button>
-            <button id="emu-btn-studio" class="btn btn-outline">Open Android Studio</button>
           </div>
 
           <div id="emulator-status" class="status-banner">
             <span class="banner-dot"></span>
-            <span id="emulator-status-text">No AVD selected</span>
+            <span id="emulator-status-text">No Virtual Device selected</span>
           </div>
         </section>
 
@@ -206,6 +206,13 @@
           <dl id="metrics-info" class="info-grid">
             <dt>Capture FPS</dt><dd>—</dd>
           </dl>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-header"><h2>Boot Timeline</h2></div>
+          <ul id="boot-timeline" class="dependency-list">
+            <li class="empty-hint">No device selected.</li>
+          </ul>
         </section>
 
         <section class="panel-section">

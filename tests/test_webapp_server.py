@@ -42,11 +42,20 @@ def app(tmp_path: Path):
 
 
 def _adb_side_effect(cmd: list[str], **kwargs: object) -> MagicMock:
-    """Return a canned response appropriate to the ADB subcommand being run."""
+    """Return a canned response appropriate to the ADB subcommand being run.
+
+    Includes ``getprop sys.boot_completed`` and ``dumpsys window`` so the
+    connect pipeline's boot-sequence checks (ADR-020) see a fully booted
+    device, matching what a real emulator/phone reports once ready.
+    """
     if "devices" in cmd:
         return _mock_result(_DEVICES_OUTPUT)
     if "size" in cmd:
         return _mock_result("Physical size: 1080x1920\n")
+    if any("boot_completed" in part for part in cmd):
+        return _mock_result("1\n")
+    if "dumpsys" in cmd:
+        return _mock_result("mCurrentFocus=Window{... com.android.launcher3/.Launcher}\n")
     if "screencap" in cmd:
         # exec-out uses capture_output=True without text=True, so stdout is bytes.
         return _mock_result(stdout=_png_bytes() if not kwargs.get("text") else "")
@@ -104,15 +113,26 @@ class TestDevices:
             assert res.status_code == 200
             assert res.json()["connected"] is False
 
-    def test_screenshot_requires_connection(self, app, adb_mock: MagicMock) -> None:
+    def test_screenshot_without_explicit_connect_auto_recovers(
+        self, app, adb_mock: MagicMock
+    ) -> None:
+        """ADR-020: a reachable, booted device auto-connects instead of 409ing on stale state."""
         with TestClient(app) as client:
             res = client.get("/api/devices/fake-serial-1/screenshot")
-        assert res.status_code == 409
+        assert res.status_code == 200
 
-    def test_tap_requires_connection(self, app, adb_mock: MagicMock) -> None:
+    def test_tap_without_explicit_connect_auto_recovers(self, app, adb_mock: MagicMock) -> None:
         with TestClient(app) as client:
             res = client.post("/api/devices/fake-serial-1/tap", json={"x": 1, "y": 2})
+        assert res.status_code == 200
+
+    def test_screenshot_on_unreachable_device_returns_409_with_stage(
+        self, app, adb_mock: MagicMock
+    ) -> None:
+        with TestClient(app) as client:
+            res = client.get("/api/devices/unknown-serial/screenshot")
         assert res.status_code == 409
+        assert res.json()["detail"]["stage"] == "waiting_for_adb"
 
 
 class TestScreenshotAndActions:
@@ -172,10 +192,10 @@ class TestScreenshotAndActions:
 
 
 class TestMetrics:
-    def test_metrics_requires_connection(self, app, adb_mock: MagicMock) -> None:
+    def test_metrics_without_explicit_connect_auto_recovers(self, app, adb_mock: MagicMock) -> None:
         with TestClient(app) as client:
             res = client.get("/api/devices/fake-serial-1/metrics")
-        assert res.status_code == 409
+        assert res.status_code == 200
 
     def test_metrics_after_connect_and_capture(self, app, adb_mock: MagicMock) -> None:
         with TestClient(app) as client:
@@ -191,6 +211,38 @@ class TestMetrics:
         assert body["input"]["count"] >= 1
         assert "fps" in body["capture"]
         assert "avg_ms" in body["input"]
+
+
+class TestBootTimeline:
+    def test_boot_timeline_empty_for_never_seen_device(self, app, adb_mock: MagicMock) -> None:
+        with TestClient(app) as client:
+            res = client.get("/api/devices/never-seen/boot-timeline")
+        assert res.status_code == 200
+        assert res.json() == []
+
+    def test_boot_timeline_records_every_stage_reached_on_connect(
+        self, app, adb_mock: MagicMock
+    ) -> None:
+        with TestClient(app) as client:
+            client.post("/api/devices/fake-serial-1/connect")
+            res = client.get("/api/devices/fake-serial-1/boot-timeline")
+
+        assert res.status_code == 200
+        timeline = res.json()
+        states = [step["state"] for step in timeline]
+        assert states == [
+            "starting",
+            "waiting_for_adb",
+            "booting",
+            "initializing",
+            "capturing_test_frame",
+            "testing_input",
+            "ready",
+        ]
+        # Every transition is attributable and timestamped (ADR-023).
+        assert all(step["owner"] == "AppSession.connect_device" for step in timeline)
+        assert all(step["elapsed_seconds"] >= 0 for step in timeline)
+        assert timeline[-1]["elapsed_seconds"] >= timeline[0]["elapsed_seconds"]
 
 
 class TestPlugins:

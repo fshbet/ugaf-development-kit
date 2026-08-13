@@ -17,9 +17,34 @@
     const res = await fetch(path, options);
     if (!res.ok) {
       const body = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(body.detail || res.statusText);
+      // /connect and action routes report DeviceRecoveryError failures as a
+      // structured {stage, reason, detail} object (ADR-020) rather than a
+      // plain string, so recovery failures show *which stage* failed.
+      const detail = body.detail;
+      const message =
+        typeof detail === "string" ? detail : detail && (detail.detail || detail.reason) || res.statusText;
+      throw new Error(message);
     }
     return res;
+  }
+
+  // Single authoritative lifecycle state per device (ADR-020) -- the UI
+  // never derives "connected"/"online" from more than one field, so it can
+  // never show a contradiction like "Status = Online / Connected = No".
+  const STATE_META = {
+    discovered: { label: "Discovered", cls: "unknown" },
+    starting: { label: "Connecting…", cls: "unknown" },
+    waiting_for_adb: { label: "Waiting for ADB…", cls: "unknown" },
+    booting: { label: "Booting…", cls: "unknown" },
+    initializing: { label: "Initializing…", cls: "unknown" },
+    capturing_test_frame: { label: "Verifying…", cls: "unknown" },
+    ready: { label: "Ready", cls: "online" },
+    disconnected: { label: "Disconnected", cls: "offline" },
+    error: { label: "Error", cls: "offline" },
+  };
+
+  function stateMeta(d) {
+    return STATE_META[d.state] || { label: d.state || "Unknown", cls: "unknown" };
   }
 
   // Classify a human-readable action message into a banner tone so the
@@ -50,13 +75,13 @@
   }
 
   function refreshGlobalStatus() {
-    const connected = state.devices.filter((d) => d.connected);
-    if (connected.length === 0) {
+    const ready = state.devices.filter((d) => d.state === "ready");
+    if (ready.length === 0) {
       setGlobalStatus("No device connected");
-    } else if (connected.length === 1) {
-      setGlobalStatus(`Connected · ${connected[0].name}`, "success");
+    } else if (ready.length === 1) {
+      setGlobalStatus(`Connected · ${ready[0].name}`, "success");
     } else {
-      setGlobalStatus(`${connected.length} devices connected`, "success");
+      setGlobalStatus(`${ready.length} devices connected`, "success");
     }
   }
 
@@ -87,15 +112,14 @@
     for (const d of state.devices) {
       const li = document.createElement("li");
       li.className = "device-card" + (d.id === state.selectedDeviceId ? " selected" : "");
-      const statusClass = ["online", "offline", "unauthorized"].includes(d.status) ? d.status : "unknown";
+      const meta = stateMeta(d);
       li.innerHTML = `
         <div class="device-icon">${DEVICE_ICON}</div>
         <div class="device-card-body">
           <div class="name">${d.name}</div>
           <div class="meta">
-            <span class="status-dot ${statusClass}"></span>
-            <span class="status-text ${statusClass}">${d.status}</span>
-            ${d.connected ? '<span class="connected-pill">Connected</span>' : ""}
+            <span class="status-dot ${meta.cls}"></span>
+            <span class="status-text ${meta.cls}">${meta.label}</span>
           </div>
         </div>
       `;
@@ -105,6 +129,7 @@
         renderDeviceInfo();
         refreshAutomationStatus();
         refreshMetrics();
+        refreshBootTimeline();
       });
       list.appendChild(li);
     }
@@ -117,13 +142,14 @@
       dl.innerHTML = "<dt>Status</dt><dd>No device selected</dd>";
       return;
     }
-    const statusClass = ["online", "offline", "unauthorized"].includes(d.status) ? d.status : "unknown";
+    const meta = stateMeta(d);
     dl.innerHTML = `
       <dt>Name</dt><dd>${d.name}</dd>
       <dt>Serial</dt><dd class="mono-text">${d.id}</dd>
-      <dt>Status</dt><dd class="status-text ${statusClass}">${d.status}</dd>
+      <dt>Status</dt><dd class="status-text ${meta.cls}">${meta.label}</dd>
+      <dt>ADB Reachability</dt><dd>${d.status}</dd>
       <dt>Transport</dt><dd>${d.transport.toUpperCase()}</dd>
-      <dt>Connected</dt><dd>${d.connected ? "Yes" : "No"}</dd>
+      <dt>Detail</dt><dd>${d.state_reason || ""}</dd>
     `;
   }
 
@@ -330,6 +356,53 @@
     }
   }
 
+  // Friendly labels for the Boot Timeline panel (ADR-023) -- maps the
+  // authoritative DeviceLifecycle states onto the plain-English boot
+  // stages a user should see, never raw SDK/state-machine identifiers.
+  const BOOT_STAGE_LABELS = {
+    validating: "SDK Validated",
+    starting: "Connecting",
+    waiting_for_adb: "ADB Connected",
+    booting: "Android Boot Complete",
+    initializing: "Capture Provider Initialized",
+    capturing_test_frame: "Screenshot Working",
+    testing_input: "Input Working",
+    ready: "Device Ready",
+    stopping: "Stopping",
+    stopped: "Stopped",
+    disconnected: "Disconnected",
+    error: "Failed",
+  };
+
+  async function refreshBootTimeline() {
+    const d = selectedDevice();
+    const list = el("boot-timeline");
+    if (!d) {
+      list.innerHTML = `<li class="empty-hint">No device selected.</li>`;
+      return;
+    }
+    try {
+      const res = await api(`/api/devices/${d.id}/boot-timeline`);
+      const timeline = await res.json();
+      if (!timeline.length) {
+        list.innerHTML = `<li class="empty-hint">No boot activity recorded yet.</li>`;
+        return;
+      }
+      list.innerHTML = "";
+      for (const step of timeline) {
+        const failed = step.state === "error";
+        const label = BOOT_STAGE_LABELS[step.state] || step.state;
+        const li = document.createElement("li");
+        li.className = `dependency-item ${failed ? "dep-missing" : "dep-ok"}`;
+        li.title = `${step.owner} · +${step.elapsed_seconds.toFixed(1)}s`;
+        li.innerHTML = `${failed ? DEP_MISSING_ICON : DEP_OK_ICON}<span class="dep-name">${label}</span><span class="dep-path">${step.reason}</span>`;
+        list.appendChild(li);
+      }
+    } catch {
+      list.innerHTML = `<li class="empty-hint">Boot timeline unavailable.</li>`;
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Text input
   // ---------------------------------------------------------------------
@@ -532,7 +605,8 @@
       const li = document.createElement("li");
       li.className = `dependency-item ${dep.found ? "dep-ok" : "dep-missing"}`;
       li.title = dep.found ? (dep.path || "") : dep.detail;
-      li.innerHTML = `${dep.found ? DEP_OK_ICON : DEP_MISSING_ICON}<span class="dep-name">${dep.name}</span>${dep.found && dep.path ? `<span class="dep-path">${dep.path}</span>` : ""}`;
+      const nameWithVersion = dep.version ? `${dep.name} (${dep.version})` : dep.name;
+      li.innerHTML = `${dep.found ? DEP_OK_ICON : DEP_MISSING_ICON}<span class="dep-name">${nameWithVersion}</span>${dep.found && dep.path ? `<span class="dep-path">${dep.path}</span>` : ""}`;
       list.appendChild(li);
     }
   }
@@ -543,10 +617,21 @@
     }
   }
 
+  // "Environment Doctor" summary: overall platform health plus how many
+  // physical/virtual devices are visible right now, from the same single
+  // DeviceManager source `/api/devices` uses -- never a second count.
+  function renderPlatformHealthSummary(status) {
+    const el_ = el("platform-health-summary");
+    const healthy = status.available;
+    el_.className = `dependency-item ${healthy ? "dep-ok" : "dep-missing"}`;
+    el_.innerHTML = `${healthy ? DEP_OK_ICON : DEP_MISSING_ICON}<span class="dep-name">Overall Platform Health: ${healthy ? "Healthy" : "Needs attention"}</span><span class="dep-path">${status.physical_device_count} physical · ${status.virtual_device_count} virtual device(s) connected</span>`;
+  }
+
   async function initEmulatorPanel() {
     try {
       const res = await api("/api/emulator/status");
       const status = await res.json();
+      renderPlatformHealthSummary(status);
       renderDependencies(status.dependencies || []);
 
       if (!status.available) {
@@ -624,17 +709,28 @@
       target.className = `dependency-item ${installed ? "dep-ok" : "dep-missing"}`;
       target.title = installed
         ? "Required system image is already installed."
-        : "Not installed yet — creating this AVD will download it automatically (can take several minutes).";
+        : "Not installed yet — creating this Virtual Device will download it automatically (can take several minutes).";
       target.innerHTML = `${installed ? DEP_OK_ICON : DEP_MISSING_ICON}<span class="dep-name">Required system image</span><span class="dep-path">${installed ? "installed" : "will download on create"}</span>`;
     } catch {
       if (token === systemImageRequestToken) target.innerHTML = "";
     }
   }
 
+  // User-facing labels for performance presets -- the underlying names
+  // (mid_range, gaming, ...) are an internal profile-config identifier,
+  // not something a user should have to interpret.
+  const PERFORMANCE_PROFILE_LABELS = {
+    low_end: "Budget Phone",
+    mid_range: "Balanced Phone",
+    flagship: "High Performance",
+    gaming: "Gaming Phone",
+  };
+
   async function loadPerformanceProfiles() {
     const res = await api("/api/emulator/performance-profiles");
     const profiles = await res.json();
     fillSelect(el("emu-performance"), profiles, {
+      label: (p) => PERFORMANCE_PROFILE_LABELS[p] || p,
       selected: (p) => p === "mid_range",
     });
   }
@@ -664,15 +760,20 @@
     syncWindowTitleFromAvd();
   }
 
+  // One-click Create Virtual Device (ADR-022): a single click takes the
+  // device all the way from "does not exist yet" to READY with a live
+  // screen -- create, validate, boot, connect, test-capture, test-tap --
+  // with no intermediate Start/Connect actions required.
   async function createAvd() {
     const name = el("emu-avd-name").value.trim();
-    if (!name) return setEmulatorStatus("Enter a name for the new AVD first", "error");
+    if (!name) return setEmulatorStatus("Enter a name for the new Virtual Device first", "error");
     const manufacturer = el("emu-manufacturer").value;
     const deviceName = el("emu-device").value;
     const performanceProfile = el("emu-performance").value;
-    setEmulatorStatus(`Creating ${name}…`, "busy");
+    setEmulatorStatus(`Creating ${name}… this can take a few minutes on first use`, "busy");
+    setEmulatorActionsEnabled(false);
     try {
-      await api("/api/emulator/avds", {
+      const res = await api("/api/emulator/avds/one-click", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -682,10 +783,17 @@
           performance_profile: performanceProfile,
         }),
       });
-      setEmulatorStatus(`${name} created`, "success");
+      const result = await res.json();
+      setEmulatorStatus(`${result.avd_name} is ready`, "success");
       await refreshAvds();
+      state.selectedDeviceId = result.device_id;
+      state.fitApplied = false;
+      await refreshDevices();
+      await captureScreenshot();
     } catch (err) {
       setEmulatorStatus(`Create failed: ${err.message}`, "error");
+    } finally {
+      setEmulatorActionsEnabled(true);
     }
   }
 
@@ -696,7 +804,7 @@
 
   async function startAvd() {
     const name = selectedAvdName();
-    if (!name) return setEmulatorStatus("Select an AVD first", "error");
+    if (!name) return setEmulatorStatus("Select a Virtual Device first", "error");
     setEmulatorStatus(`Starting ${name}…`, "busy");
     try {
       await api(`/api/emulator/avds/${encodeURIComponent(name)}/start`, { method: "POST" });
@@ -710,7 +818,7 @@
 
   async function stopAvd() {
     const name = selectedAvdName();
-    if (!name) return setEmulatorStatus("Select an AVD first", "error");
+    if (!name) return setEmulatorStatus("Select a Virtual Device first", "error");
     setEmulatorStatus(`Stopping ${name}…`, "busy");
     try {
       await api(`/api/emulator/avds/${encodeURIComponent(name)}/stop`, { method: "POST" });
@@ -724,7 +832,7 @@
 
   async function deleteAvd() {
     const name = selectedAvdName();
-    if (!name) return setEmulatorStatus("Select an AVD first", "error");
+    if (!name) return setEmulatorStatus("Select a Virtual Device first", "error");
     setEmulatorStatus(`Deleting ${name}…`, "busy");
     try {
       await api(`/api/emulator/avds/${encodeURIComponent(name)}`, { method: "DELETE" });
@@ -737,7 +845,7 @@
 
   async function renameAvd() {
     const name = selectedAvdName();
-    if (!name) return setEmulatorStatus("Select an AVD first", "error");
+    if (!name) return setEmulatorStatus("Select a Virtual Device first", "error");
     const newName = window.prompt(`Rename "${name}" to:`, name);
     if (!newName || newName === name) return;
     setEmulatorStatus(`Renaming ${name} to ${newName}…`, "busy");
@@ -751,17 +859,6 @@
       await refreshAvds();
     } catch (err) {
       setEmulatorStatus(`Rename failed: ${err.message}`, "error");
-    }
-  }
-
-  async function openAndroidStudio() {
-    setEmulatorStatus("Opening Android Studio…", "busy");
-    try {
-      const res = await api("/api/emulator/open-android-studio", { method: "POST" });
-      const body = await res.json();
-      setEmulatorStatus(body.launched ? "Android Studio launched" : "Android Studio not found", body.launched ? "success" : "error");
-    } catch (err) {
-      setEmulatorStatus(`Failed: ${err.message}`, "error");
     }
   }
 
@@ -803,7 +900,6 @@
     el("emu-btn-stop").addEventListener("click", stopAvd);
     el("emu-btn-rename").addEventListener("click", renameAvd);
     el("emu-btn-delete").addEventListener("click", deleteAvd);
-    el("emu-btn-studio").addEventListener("click", openAndroidStudio);
   }
 
   // ---------------------------------------------------------------------
@@ -878,6 +974,7 @@
     }, 3000);
     setInterval(refreshMetrics, 2000);
     setInterval(refreshAutomationStatus, 3000);
+    setInterval(refreshBootTimeline, 2000);
 
     refreshDevices();
     refreshPlugins();

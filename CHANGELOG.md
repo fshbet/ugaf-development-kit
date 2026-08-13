@@ -2,6 +2,88 @@
 
 ## Unreleased
 
+### Android Platform Experience: one-click Create Virtual Device
+
+#### Added
+
+- **One-click "Create Virtual Device"** (`AppSession.create_and_ready_avd`,
+  `POST /api/emulator/avds/one-click`): a single click now takes a device from
+  "does not exist" all the way to a live screen and `READY` — create, validate
+  dependencies, boot, wait for ADB, unlock the screen, capture a test
+  screenshot, test a real tap, and connect — no intermediate Start/Connect
+  clicks. The webapp's Create button now calls this route directly.
+- **Screen unlock** and **test tap injection** (`DeviceState.TESTING_INPUT`)
+  added as standard stages of the device-connect boot sequence (ADR-020) —
+  every connect, not just freshly created devices, now unlocks the screen and
+  verifies input injection with a real tap before declaring `READY`.
+- Friendly performance-profile labels in the UI (`mid_range` → "Balanced
+  Phone", `gaming` → "Gaming Phone", `flagship` → "High Performance",
+  `low_end` → "Budget Phone") — the underlying identifiers are unchanged.
+
+### Android Platform Reliability: AndroidPlatformManager facade, SDK validation, name sanitization, Environment Doctor
+
+#### Added
+
+- **`ugaf.android_platform.AndroidPlatformManager`**: the single Android-domain facade
+  the webapp now routes AVD start/stop through — exposes `list_virtual_devices`,
+  `create_virtual_device`, `start_virtual_device`, `stop_virtual_device`,
+  `list_physical_devices`, `platform_health()` instead of raw SDK-tool operations.
+  `start_virtual_device()` validates every blocking SDK dependency *before* launching
+  the emulator process (the directive's "Create -> Validate -> Boot" sequence),
+  refusing with a specific reason instead of a doomed multi-minute boot timeout.
+- **`ugaf.emulator.naming.sanitize_avd_name()`**: user-entered Virtual Device names
+  (e.g. `"ROG A15"`) are automatically sanitized into valid `avdmanager` identifiers
+  (`"ROG_A15"`) — the original is preserved on `AvdInfo.display_name` for the UI.
+- **Two new, non-blocking `EnvironmentChecker` checks**: `cmdline_tools_consistency`
+  (flags an ambiguous `cmdline-tools` layout with no `latest` dir) and `hypervisor`
+  (surfaces `emulator -accel-check`'s hardware-acceleration result).
+- **Environment Doctor summary**: the emulator panel now shows overall platform
+  health plus live physical/virtual device counts, from the same `DeviceManager`
+  source `/api/devices` uses.
+- **`DeviceLifecycle`** (ADR-020) gained `VALIDATING`/`STOPPING`/`STOPPED` states,
+  now driven by `AndroidPlatformManager`'s start/stop pipeline.
+
+#### Changed
+
+- **UI terminology**: "AVD" renamed to "Virtual Device" in every user-facing label.
+- **Removed** the "Open Android Studio" button/route/session method entirely — per
+  the directive, UGAF now only ever uses Android Studio's install location to help
+  locate the SDK, and never launches the IDE itself.
+
+### Device lifecycle: single-authoritative state machine, real boot-sequence validation, auto-recovering screenshots
+
+#### Added
+
+- **`ugaf.device.lifecycle.DeviceLifecycle`**: the one authoritative state machine per
+  device, replacing the dual `DeviceManager` status / `AppSession._connections`
+  dict-membership flags that could disagree. States:
+  `DISCOVERED`/`STARTING`/`WAITING_FOR_ADB`/`BOOTING`/`INITIALIZING`/
+  `CAPTURING_TEST_FRAME`/`READY`/`DISCONNECTED`/`ERROR`, every transition logged.
+- **`DeviceManager.shell_sync()`**: a plain synchronous ADB shell probe for the
+  boot-sequence pipeline's `sys.boot_completed`/launcher check.
+- **`DeviceRecoveryError`**: raised with the exact pipeline stage and reason when a
+  device can't be brought to `READY`; surfaced as a structured 409 diagnostic
+  (`{"stage": ..., "reason": ..., "detail": ...}`), never a bare "not connected".
+
+#### Fixed
+
+- **Real bug**: the web UI could show `Status = Online` (from live ADB, via
+  `DeviceManager.discover()`) and `Connected = No` (from `AppSession._connections`
+  dict membership) simultaneously, and screenshot requests could 409 even though the
+  device was fully reachable — two independent, unreconciled state sources for one
+  device. `is_connected()` is now backed entirely by `DeviceLifecycle`, so the two can
+  never disagree. See ADR-020 for the full lifecycle trace and root cause.
+- **Real bug**: `connect_device()` declared a device "connected" the instant its
+  `InputManager`/`ScreenshotManager` objects were constructed, with no check that the
+  device had actually finished booting or could produce a real frame. Replaced with a
+  boot-sequence pipeline: verify ADB reachability → `sys.boot_completed == 1` +
+  launcher focus → initialize providers → capture a real test screenshot → only then
+  `READY`.
+- **Real bug**: screenshot/tap/swipe/text/metrics returned HTTP 409 purely because an
+  internal "connected" flag was stale (e.g. right after a webapp restart), even when
+  the device was online and ready. These routes now auto-recover by re-running the
+  boot-sequence pipeline once before reporting a (now stage-specific) failure.
+
 ### Emulator Manager: ATDD acceptance validation, dependency checklist, real boot-crash fixes
 
 #### Added

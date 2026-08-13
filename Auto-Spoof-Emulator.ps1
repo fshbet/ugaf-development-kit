@@ -1,0 +1,213 @@
+param(
+    [Parameter(Position=0)]
+    [string]$ModelName = "",
+
+    [Parameter(Position=1)]
+    [string]$AVDName = "",
+
+    [switch]$PauseBeforeLaunch
+)
+
+$env:ANDROID_HOME = "E:\Android\SDK"
+$AndroidHome = $env:ANDROID_HOME
+$AvdConfigDir = Join-Path $env:USERPROFILE ".android\avd"
+
+$AvdManager = Join-Path $AndroidHome "cmdline-tools\latest\bin\avdmanager.bat"
+$SdkManager = Join-Path $AndroidHome "cmdline-tools\latest\bin\sdkmanager.bat"
+$Emulator = Join-Path $AndroidHome "emulator\emulator.exe"
+$Adb = Join-Path $AndroidHome "platform-tools\adb.exe"
+
+if (-not (Test-Path $AvdManager)) { Write-Error "avdmanager not found: $AvdManager"; exit 1 }
+if (-not (Test-Path $SdkManager)) { Write-Error "sdkmanager not found: $SdkManager"; exit 1 }
+if (-not (Test-Path $Emulator))   { Write-Error "emulator not found: $Emulator"; exit 1 }
+
+function Get-DeviceProfile {
+    param([string]$Model)
+
+    $map = @{
+        "Pixel 6 Pro" = @{
+            DeviceId = "pixel_6_pro"
+            Manufacturer = "Google"
+            Model = "Pixel 6 Pro"
+            Fingerprint = "Google/raven/raven:14/UQ1A.240205.002/11224170:user/release-keys"
+        }
+        "Pixel 7 Pro" = @{
+            DeviceId = "pixel_7_pro"
+            Manufacturer = "Google"
+            Model = "Pixel 7 Pro"
+            Fingerprint = "google/cheetah/cheetah:14/UQ1A.240205.002/11224170:user/release-keys"
+        }
+        "Pixel 6" = @{
+            DeviceId = "pixel_6"
+            Manufacturer = "Google"
+            Model = "Pixel 6"
+            Fingerprint = "google/oriole/oriole:14/UQ1A.240205.002/11224170:user/release-keys"
+        }
+        "Pixel 7" = @{
+            DeviceId = "pixel_7"
+            Manufacturer = "Google"
+            Model = "Pixel 7"
+            Fingerprint = "google/panther/panther:14/UQ1A.240205.002/11224170:user/release-keys"
+        }
+    }
+
+    if ($map.ContainsKey($Model)) { return $map[$Model] }
+
+    Write-Host "Model '$Model' not found. Falling back to Pixel 6 Pro." -ForegroundColor Yellow
+    return $map["Pixel 6 Pro"]
+}
+
+function Ensure-SystemImage {
+    param([string]$SystemImage)
+
+    $sysDir = Join-Path $AndroidHome "system-images\android-30\google_apis_playstore\x86_64"
+    if (Test-Path $sysDir) { return $true }
+
+    Write-Host "Installing missing system image: $SystemImage" -ForegroundColor Yellow
+    & $SdkManager "--sdk_root=$AndroidHome" $SystemImage
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Upsert-AVD {
+    param(
+        [string]$ModelName,
+        [string]$AVDName
+    )
+
+    $profile = Get-DeviceProfile $ModelName
+    $SystemImage = "system-images;android-30;google_apis_playstore;x86_64"
+    $ConfigPath = Join-Path $AvdConfigDir "$AVDName.avd\config.ini"
+
+    if (-not (Ensure-SystemImage $SystemImage)) {
+        Write-Error "Failed to install system image."
+        return $false
+    }
+
+    if (-not (Test-Path $ConfigPath)) {
+        Write-Host "Creating AVD '$AVDName' with device '$($profile.DeviceId)'" -ForegroundColor Cyan
+        "no" | & $AvdManager create avd `
+            --name $AVDName `
+            --package $SystemImage `
+            --device $profile.DeviceId `
+            --abi "x86_64"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "AVD creation failed."
+            return $false
+        }
+    } else {
+        Write-Host "AVD '$AVDName' exists. Updating config..." -ForegroundColor Yellow
+    }
+
+    if (-not (Test-Path $ConfigPath)) {
+        Write-Error "Missing config file: $ConfigPath"
+        return $false
+    }
+
+    $existing = @{}
+    Get-Content $ConfigPath | ForEach-Object {
+        if ($_ -match '^([^=]+)=(.*)$') {
+            $existing[$Matches[1]] = $Matches[2]
+        }
+    }
+
+    $existing["image.sysdir.1"] = "system-images\android-30\google_apis_playstore\x86_64\"
+    $existing["avd.ini.displayname"] = $AVDName
+    $existing["hw.device.name"] = $profile.DeviceId
+    $existing["hw.device.manufacturer"] = $profile.Manufacturer
+    $existing["hw.device.model"] = $profile.Model
+    $existing["disk.dataPartition.size"] = "6G"
+
+    $lines = $existing.Keys | Sort-Object | ForEach-Object { "$_=$($existing[$_])" }
+    Set-Content -Path $ConfigPath -Value $lines -Encoding UTF8
+
+    $sysDir = Join-Path $AndroidHome "system-images\android-30\google_apis_playstore\x86_64"
+    if (-not (Test-Path $sysDir)) {
+        Write-Error "System image dir not found: $sysDir"
+        return $false
+    }
+
+    Write-Host "Updated $ConfigPath" -ForegroundColor Green
+    return $true
+}
+
+function Start-AVD {
+    param(
+        [string]$ModelName,
+        [string]$AVDName
+    )
+
+    $profile = Get-DeviceProfile $ModelName
+    $logDir = Join-Path $env:TEMP "emu-logs"
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    $stdout = Join-Path $logDir "$AVDName-out.log"
+    $stderr = Join-Path $logDir "$AVDName-err.log"
+
+    $launchArgs = @(
+        "-avd", $AVDName,
+        "-no-boot-anim",
+        "-gpu", "swiftshader",
+        "-verbose"
+    )
+
+    if ($PauseBeforeLaunch) {
+        Write-Host "Press any key to launch emulator..." -ForegroundColor Yellow
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    }
+
+    Write-Host "Launching: $Emulator $($launchArgs -join ' ')" -ForegroundColor DarkGray
+
+    $savedSdkRoot = $env:ANDROID_SDK_ROOT
+    Remove-Item Env:\ANDROID_SDK_ROOT -ErrorAction SilentlyContinue
+
+    try {
+        $proc = Start-Process `
+            -FilePath $Emulator `
+            -ArgumentList $launchArgs `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr `
+            -PassThru
+
+        Start-Sleep -Seconds 8
+
+        if ($proc.HasExited) {
+            Write-Host "Emulator exited early. ExitCode=$($proc.ExitCode)" -ForegroundColor Red
+            Write-Host "stderr log: $stderr" -ForegroundColor Yellow
+            if (Test-Path $stderr) {
+                Get-Content $stderr | Select-Object -Last 60
+            }
+            return $false
+        }
+
+        Write-Host "Emulator is running. PID=$($proc.Id)" -ForegroundColor Green
+        return $true
+    }
+    finally {
+        if ($null -ne $savedSdkRoot) {
+            $env:ANDROID_SDK_ROOT = $savedSdkRoot
+        }
+    }
+}
+
+Write-Host "=== Android Spoofed AVD Creator ===" -ForegroundColor White
+
+if ([string]::IsNullOrWhiteSpace($ModelName)) {
+    $ModelName = Read-Host "Enter Model Name"
+}
+if ([string]::IsNullOrWhiteSpace($ModelName)) {
+    $ModelName = "Pixel 6 Pro"
+}
+
+if ([string]::IsNullOrWhiteSpace($AVDName)) {
+    $AVDName = Read-Host "Enter AVD Name"
+}
+if ([string]::IsNullOrWhiteSpace($AVDName)) {
+    $AVDName = "AVD_" + (Get-Random -Minimum 1000 -Maximum 9999)
+}
+
+$ok = Upsert-AVD -ModelName $ModelName -AVDName $AVDName
+if (-not $ok) { exit 1 }
+
+$launched = Start-AVD -ModelName $ModelName -AVDName $AVDName
+if (-not $launched) { exit 1 }
+
+Write-Host "Done." -ForegroundColor Green

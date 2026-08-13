@@ -198,6 +198,22 @@ def test_create_uses_device_and_performance_profiles(manager: EmulatorManager) -
     assert "mid_range" in manager.list_performance_profiles()
 
 
+def test_create_sanitizes_avd_name_and_preserves_display_name(manager: EmulatorManager) -> None:
+    avd = manager.create("ROG A15", "Google", "pixel_6", "mid_range")
+    assert avd.name == "ROG_A15"
+    assert avd.display_name == "ROG A15"
+    # The sanitized name is what the AVD is actually reachable/startable under.
+    assert manager.is_running("ROG_A15") is False
+
+
+def test_create_leaves_display_name_none_when_no_sanitization_needed(
+    manager: EmulatorManager,
+) -> None:
+    avd = manager.create("AlreadyValid", "Google", "pixel_6", "mid_range")
+    assert avd.name == "AlreadyValid"
+    assert avd.display_name is None
+
+
 def test_list_manufacturers(manager: EmulatorManager) -> None:
     assert manager.list_manufacturers() == ["Google"]
 

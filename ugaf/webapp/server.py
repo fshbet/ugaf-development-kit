@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from ugaf.webapp.session import AppSession
+from ugaf.webapp.session import AppSession, DeviceRecoveryError
 
 __all__ = [
     "create_app",
@@ -73,6 +73,17 @@ class CreateAvdRequest(BaseModel):
     performance_profile: str = "mid_range"
 
 
+class CreateAndReadyAvdRequest(BaseModel):
+    """Request body for the one-click Create Virtual Device workflow."""
+
+    name: str
+    manufacturer: str
+    device_name: str
+    performance_profile: str = "mid_range"
+    capture_provider: str = "window"
+    window_title: str | None = None
+
+
 def create_app(
     config_path: Path | str | None = None,
     games_dir: Path | str | None = None,
@@ -118,6 +129,12 @@ def create_app(
                 "status": d.status.value,
                 "platform": d.platform,
                 "transport": d.transport,
+                # Single authoritative source (ADR-020): "connected" is
+                # never an independent flag, only ever derived from the
+                # same DeviceLifecycle state reported in "state" below —
+                # so these two fields can never contradict each other.
+                "state": session.device_state(d.id),
+                "state_reason": session.device_state_reason(d.id),
                 "connected": session.is_connected(d.id),
             }
             for d in devices
@@ -132,25 +149,44 @@ def create_app(
                 capture_provider=request.capture_provider,
                 window_title=request.window_title,
             )
+        except DeviceRecoveryError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"stage": exc.stage, "reason": exc.reason, "device_id": exc.device_id},
+            ) from exc
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
             "connected": True,
             "device_id": device_id,
             "capture_provider": request.capture_provider,
+            "state": session.device_state(device_id),
         }
 
     @app.post("/api/devices/{device_id}/disconnect")
     async def disconnect_device(device_id: str) -> dict[str, Any]:
         session.disconnect_device(device_id)
-        return {"connected": False, "device_id": device_id}
+        return {
+            "connected": False,
+            "device_id": device_id,
+            "state": session.device_state(device_id),
+        }
+
+    def _recovery_detail(exc: DeviceRecoveryError) -> dict[str, str]:
+        """Build the detailed diagnostic body required by ADR-020's recovery contract."""
+        return {
+            "stage": exc.stage,
+            "reason": exc.reason,
+            "device_id": exc.device_id,
+            "detail": f"Automatic recovery failed at stage {exc.stage!r}: {exc.reason}",
+        }
 
     @app.get("/api/devices/{device_id}/screenshot")
     async def screenshot(device_id: str) -> StreamingResponse:
         try:
             image = session.capture(device_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DeviceRecoveryError as exc:
+            raise HTTPException(status_code=409, detail=_recovery_detail(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         png_bytes = session.encode_png(image)
@@ -160,31 +196,35 @@ def create_app(
     async def device_metrics(device_id: str) -> dict[str, Any]:
         try:
             return session.device_metrics(device_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DeviceRecoveryError as exc:
+            raise HTTPException(status_code=409, detail=_recovery_detail(exc)) from exc
+
+    @app.get("/api/devices/{device_id}/boot-timeline")
+    async def boot_timeline(device_id: str) -> list[dict[str, Any]]:
+        return session.boot_timeline(device_id)
 
     @app.post("/api/devices/{device_id}/tap")
     async def tap(device_id: str, body: TapRequest) -> dict[str, Any]:
         try:
             session.tap(device_id, body.x, body.y)
-        except KeyError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DeviceRecoveryError as exc:
+            raise HTTPException(status_code=409, detail=_recovery_detail(exc)) from exc
         return {"tapped": [body.x, body.y]}
 
     @app.post("/api/devices/{device_id}/swipe")
     async def swipe(device_id: str, body: SwipeRequest) -> dict[str, Any]:
         try:
             session.swipe(device_id, body.x1, body.y1, body.x2, body.y2, body.duration)
-        except KeyError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DeviceRecoveryError as exc:
+            raise HTTPException(status_code=409, detail=_recovery_detail(exc)) from exc
         return {"swiped": True}
 
     @app.post("/api/devices/{device_id}/text")
     async def type_text(device_id: str, body: TextRequest) -> dict[str, Any]:
         try:
             session.type_text(device_id, body.text)
-        except KeyError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DeviceRecoveryError as exc:
+            raise HTTPException(status_code=409, detail=_recovery_detail(exc)) from exc
         return {"typed": body.text}
 
     @app.get("/api/plugins")
@@ -299,6 +339,30 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/emulator/avds/one-click")
+    async def create_and_ready_avd(body: CreateAndReadyAvdRequest) -> dict[str, Any]:
+        try:
+            # The full create -> validate -> boot -> connect -> READY
+            # pipeline (ADR-022) can take minutes on a first-time system
+            # image download plus a real boot -- run off the event loop
+            # like every other long-running SDK operation.
+            return await asyncio.to_thread(
+                session.create_and_ready_avd,
+                body.name,
+                body.manufacturer,
+                body.device_name,
+                body.performance_profile,
+                body.capture_provider,
+                body.window_title,
+            )
+        except DeviceRecoveryError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"stage": exc.stage, "reason": exc.reason, "device_id": exc.device_id},
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/emulator/avds/{name}/stop")
     async def stop_avd(name: str) -> dict[str, Any]:
         try:
@@ -322,11 +386,6 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"renamed": name, "new_name": body.new_name}
-
-    @app.post("/api/emulator/open-android-studio")
-    async def open_android_studio() -> dict[str, Any]:
-        launched = session.open_android_studio()
-        return {"launched": launched}
 
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 

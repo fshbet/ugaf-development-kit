@@ -21,3 +21,8 @@ venv/
 # IDE
 .vscode/
 .idea/
+
+# Secrets
+.env
+.env.*
+!.env.example

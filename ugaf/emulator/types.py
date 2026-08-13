@@ -188,6 +188,13 @@ class AvdInfo:
         error: Human-readable reason *valid* is ``False``, else ``None``.
         running: Whether an emulator process is currently running this AVD.
         adb_serial: The ``adb`` serial (e.g. ``"emulator-5554"``) if running.
+        display_name: The original, pre-sanitization name the user typed
+            in (e.g. ``"ROG A15"``), when :meth:`~ugaf.emulator.manager.EmulatorManager.create`
+            had to sanitize it into *name* (e.g. ``"ROG_A15"``) for
+            ``avdmanager``. ``None`` when no sanitization was needed, or
+            for AVDs not just freshly created (``list()`` never
+            populates this — there is nowhere to recover the original
+            display name from disk).
 
     """
 
@@ -200,6 +207,7 @@ class AvdInfo:
     error: str | None = None
     running: bool = False
     adb_serial: str | None = None
+    display_name: str | None = None
 
 
 @dataclass(frozen=True)

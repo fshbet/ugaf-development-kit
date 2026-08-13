@@ -279,6 +279,145 @@ documented, unsolved trade-off (the AMD-driver fix disables hardware-GPU renderi
 default on every host, not just ones that hit the bug, since there's no way to detect
 it in advance short of booting and watching it crash).
 
+## Device state machine and lifecycle bug investigation (2026-07-05)
+
+Directive: the web UI could show `Status = Online` (real ADB) and `Connected = No`
+(session-local flag) simultaneously, with screenshot requests 409ing on a fully
+reachable device — find the root cause, not a workaround, and replace duplicate state
+with one authoritative source.
+
+- [x] **Traced the full lifecycle** (Launch → ADB discovery → Device Registration →
+      Connection State → Screenshot Provider → Web API → UI) and confirmed the exact
+      mechanism: `AppSession._connections` (pure dict-membership) and
+      `DeviceManager.discover()` (live ADB status) were two independent, unreconciled
+      state sources exposed side by side by `GET /api/devices`, with `connect_device()`
+      never verifying actual boot/readiness before declaring "connected". See ADR-020
+      for the full trace.
+- [x] **Added `ugaf.device.lifecycle.DeviceLifecycle`**: one authoritative state per
+      device (`DISCOVERED`/`STARTING`/`WAITING_FOR_ADB`/`BOOTING`/`INITIALIZING`/
+      `CAPTURING_TEST_FRAME`/`READY`/`DISCONNECTED`/`ERROR`), every transition logged.
+      `AppSession.is_connected()` now reads only this state — the dict-membership flag
+      is gone, so the two can never disagree again.
+- [x] **Implemented the full boot-sequence pipeline** in `AppSession._run_boot_sequence()`:
+      verify ADB reachability → `sys.boot_completed == 1` + launcher focus via
+      `dumpsys window` → initialize input/screenshot providers → capture a real test
+      screenshot → only then `READY`. Any stage failure raises `DeviceRecoveryError`
+      naming the exact stage.
+- [x] **Screenshot/tap/swipe/text/metrics never hard-409 on a stale flag anymore**:
+      `AppSession._ensure_ready()` re-runs the boot sequence once before giving up, so a
+      device that's actually online and booted self-heals instead of requiring a manual
+      reconnect. A genuine failure now returns a structured diagnostic
+      (`{"stage": ..., "reason": ..., "detail": ...}`) naming which stage failed.
+- [x] **UI reflects one authoritative state**: `GET /api/devices` now reports
+      `state`/`state_reason` from `DeviceLifecycle`, with `connected` derived from it
+      (never independent); `app.js` renders a single status pill from `state`
+      (`STATE_META`) instead of separately rendering ADB status and a connected pill
+      that could disagree.
+- [x] **Regression tests**: `tests/test_device_lifecycle.py` (7 tests for the state
+      machine itself) plus `tests/test_webapp_server.py` updated/extended to cover the
+      full pipeline (boot-completion gating, stage-specific 409 diagnostics, and
+      auto-recovery on a stale-but-reachable device via the real FastAPI TestClient with
+      mocked ADB).
+
+809 tests passing, ruff and mypy clean. See ADR-020 in `ARCHITECTURE_DECISIONS.md` for
+the complete root-cause writeup.
+
+**Not yet done**: live end-to-end acceptance validation against a real booted AVD,
+including the directive's explicit "repeat every test after restarting the web
+server" requirement — this pass validated the pipeline via the FastAPI TestClient with
+mocked ADB (fast, deterministic, covers every stage/failure path) rather than a live
+emulator boot cycle, which the next pass should still perform for full confidence.
+
+## Android Platform Reliability sprint (2026-07-05)
+
+Directive: Android Studio/sdkmanager/avdmanager/emulator.exe/adb.exe are
+implementation details the user should never need to know about — refactor the
+Android Platform layer into a real platform manager, not just add features.
+
+- [x] **`ugaf.android_platform.AndroidPlatformManager`** built as the Android-domain
+      facade: `list_virtual_devices`/`create_virtual_device`/`start_virtual_device`/
+      `stop_virtual_device`/`list_physical_devices`/`platform_health`. Wraps
+      already-constructed managers (never builds its own SDK-locating
+      `EmulatorManager`) so it adds no extra SDK-probing cost and stays trivially
+      mockable. `AppSession.start_avd`/`stop_avd`/`delete_avd` now route through it.
+- [x] **Validate-before-boot**: `start_virtual_device()` runs the full dependency
+      report and refuses to launch (naming the exact missing component) *before*
+      ever invoking `emulator.exe` — previously a doomed launch only failed later as
+      an opaque boot timeout. `DeviceLifecycle` (ADR-020) gained
+      `VALIDATING`/`STOPPING`/`STOPPED`, driven by this same facade, on the same
+      authoritative state store the device-connect pipeline uses.
+- [x] **Automatic AVD name sanitization**: `EmulatorManager.create()` now sanitizes
+      any user-entered name (`"ROG A15"` → `"ROG_A15"`) before it reaches
+      `avdmanager`, preserving the original on `AvdInfo.display_name` for the UI.
+- [x] **Two new non-blocking SDK checks**: `cmdline_tools_consistency` (ambiguous
+      `cmdline-tools` layout with no `latest` dir) and `hypervisor` (surfaces
+      `emulator -accel-check`'s hardware-acceleration result). The existing
+      dependency-checklist UI needed zero rendering changes to pick these up — it
+      already iterated the list generically.
+- [x] **Environment Doctor summary** added to the emulator panel: overall platform
+      health plus live physical/virtual device counts, from the same `DeviceManager`
+      source `/api/devices` uses — live-validated against this machine's real SDK
+      (`Overall Platform Health: Healthy`, real Hypervisor=WHPX, real cmdline-tools
+      path, 8 dependency rows all correctly rendered).
+- [x] **Removed "Open Android Studio"** (button, JS handler, session method, route)
+      entirely per the directive — UGAF now only ever uses Android Studio's install
+      location to help find the SDK, never launches the IDE.
+- [x] **UI terminology**: "AVD" → "Virtual Device" throughout every user-facing label.
+- [x] **Regression tests**: `tests/test_android_platform_manager.py` (7),
+      `tests/test_emulator_naming.py` (8), 3 new cmdline-tools/hypervisor tests in
+      `tests/test_emulator_dependencies.py`, plus updated fixtures across
+      `test_webapp_emulator_routes.py`/`test_emulator_manager.py`.
+
+831 tests passing, ruff and mypy clean. See ADR-021 in `ARCHITECTURE_DECISIONS.md` for
+the full design rationale and documented follow-ups (the AVD-name-vs-adb-serial
+lifecycle-key seam, and the read-only emulator listing methods that still call
+`EmulatorManager` directly rather than through the new facade).
+
+**Not yet done** (scoped out of this pass, tracked as follow-ups): "Capture Test"/
+"Input Test" buttons and a dedicated `platform_health()` API route (the facade method
+exists and is unit-tested, but the webapp only consumes its device-count logic today);
+folding the remaining read-only `AppSession` emulator methods through
+`AndroidPlatformManager` too; live acceptance validation of the validate-before-boot
+path against a real AVD start (validated live only against this machine's already
+fully-healthy environment, not against a deliberately-broken one).
+
+## Android Platform Experience sprint: one-click Create Virtual Device (2026-07-05)
+
+Directive: eliminate manual setup — clicking "Create Virtual Device" should be the
+*only* user action needed to reach a live, automation-ready device. No SDK/AVD/adb
+terminology should be user-facing.
+
+- [x] **One-click flow**: `AppSession.create_and_ready_avd()` composes
+      create → validate → start → wait-for-boot → connect (the full ADR-020
+      pipeline) into a single call; `POST /api/emulator/avds/one-click` runs it
+      off-loop. The webapp's Create button now calls this route and, on success,
+      immediately shows the new device's live screen — zero intermediate
+      Start/Connect clicks.
+- [x] **Boot sequence extended** with two new real stages, applied to every
+      device-connect (not just fresh creates): screen unlock (`adb shell input
+      keyevent` wake + menu, best-effort) inside `BOOTING`, and a genuine test tap
+      (new `DeviceState.TESTING_INPUT`) after the test screenshot, before `READY`.
+      Auto-recovery (ADR-020) covers both automatically since it re-runs the whole
+      pipeline.
+- [x] **Friendly profile labels**: performance presets now show as "Gaming
+      Phone"/"Balanced Phone"/"High Performance"/"Budget Phone" in the UI; backend
+      identifiers (`gaming`/`mid_range`/etc.) unchanged.
+- [x] **Regression tests**: `tests/test_webapp_one_click_avd.py` (4 tests, including
+      a full success path with a mocked ADB device carrying the exact serial the
+      mocked `start()` returns through every pipeline stage to `state: "ready"`).
+- [x] **Live-verified UI wiring**: confirmed via the real browser preview that the
+      Create button calls `/api/emulator/avds/one-click` with the correct payload
+      and correctly re-enables its buttons and shows a diagnostic on failure.
+
+835 tests passing, ruff and mypy clean. See ADR-022 in `ARCHITECTURE_DECISIONS.md`.
+
+**Not yet done**: a full live run against a real multi-minute AVD boot cycle (this
+pass validated the pipeline via TestClient + mocked ADB, and live-verified only the
+UI-to-route wiring, deliberately avoiding a several-minute real boot already proven
+independently in ADR-019); a "Tablet" form-factor device profile (only
+brand/performance profiles exist today, no dedicated tablet hardware profile);
+`AndroidPlatformManager.platform_health()` still isn't exposed via its own route.
+
 ---
 
 # Source-Verified Audit (historical)

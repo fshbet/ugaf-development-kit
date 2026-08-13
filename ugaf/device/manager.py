@@ -301,6 +301,28 @@ class DeviceManager:
         assert last_exc is not None
         raise last_exc
 
+    def shell_sync(self, device_id: str, *args: str) -> str:
+        """Execute a shell command on *device_id* synchronously, no retries.
+
+        For callers that are themselves synchronous (e.g.
+        :class:`~ugaf.webapp.session.AppSession`'s device connect
+        pipeline) and need a single direct probe -- e.g. checking
+        ``sys.boot_completed`` -- without the async retry/recovery
+        machinery of :meth:`execute_shell`.
+
+        Raises:
+            DeviceNotConnectedError: If *device_id* is not known or
+                its transport does not support shell execution.
+            DeviceCommandError: If the command fails.
+
+        """
+        provider = self._resolve_provider(device_id)
+        if not isinstance(provider, _ShellCapableTransport):
+            raise DeviceNotConnectedError(
+                f"Transport for device {device_id!r} does not support shell execution"
+            )
+        return provider.shell(device_id, *args)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

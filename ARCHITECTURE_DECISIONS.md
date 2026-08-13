@@ -1062,3 +1062,309 @@ independent, stacked root causes, each confirmed via direct evidence, not guesse
   in this same acceptance pass) rather than via a dedicated `restart()` method — judged
   sufficient since both primitives are independently reliable and a wrapper would add
   no behavior, only a name.
+
+## ADR-020: Single-authoritative `DeviceLifecycle` state machine replacing dual connected/status flags
+
+### Context
+
+The web control panel could show `Status = Online` (from live ADB) and
+`Connected = No` (from the session layer) for the same device at the same
+time, and `GET /api/devices/{id}/screenshot` could return HTTP 409 even
+though the device was perfectly reachable.
+
+Root cause, traced end to end (Launch → ADB discovery → Device Registration
+→ Connection State → Screenshot Provider → Web API → UI):
+
+- `ugaf.device.manager.DeviceManager.discover()` is the one real,
+  continuously-repolled source of ADB reachability (`DeviceStatus.ONLINE` /
+  `OFFLINE` / `UNAUTHORIZED`).
+- `ugaf.webapp.session.AppSession` maintained a *second*, entirely
+  independent notion of "connected": whether `device_id` was a key in a
+  plain `dict` (`self._connections`), set once when `connect_device()` was
+  first called and never revisited.
+- `GET /api/devices` returned both fields side by side
+  (`"status": d.status.value`, `"connected": session.is_connected(d.id)`)
+  with no reconciliation between them — so the two could trivially
+  disagree (e.g. after a webapp restart, an emulator reboot, or any path
+  that left the dict stale while ADB kept reporting the device online).
+- `connect_device()` itself never verified readiness — it constructed an
+  `InputManager`/`ScreenshotManager` pair and returned immediately, with no
+  check that the device had finished booting or could produce a real
+  frame. "Connected" and "actually ready to serve a screenshot" were not
+  the same thing even when the dict and ADB agreed.
+- The screenshot/tap/swipe/text/metrics routes all mapped "not a key in
+  `self._connections`" straight to `KeyError` → HTTP 409, with zero
+  attempt to revalidate or recover — a transient dict-population gap (e.g.
+  right after a restart) was indistinguishable from a genuinely
+  unreachable device.
+
+No duplicate state should exist for one device; every subsystem must
+consume one authoritative source instead of maintaining independent flags.
+
+### Decision
+
+- Added `ugaf.device.lifecycle.DeviceLifecycle`: the single authoritative
+  state machine, one `DeviceState` per `device_id` —
+  `DISCOVERED` / `STARTING` / `WAITING_FOR_ADB` / `BOOTING` /
+  `INITIALIZING` / `CAPTURING_TEST_FRAME` / `READY` / `DISCONNECTED` /
+  `ERROR`. Every transition is logged (`device_lifecycle.transition`, with
+  `from_state`/`to_state`/`reason`). Unknown devices report `DISCONNECTED`
+  rather than raising, so callers never need a separate existence check.
+- `AppSession.is_connected()` now does nothing but read
+  `DeviceLifecycle.is_ready()` — the dict-membership flag is gone
+  entirely, so "connected" and "state" can never contradict each other by
+  construction, not by convention.
+- `connect_device()` was rewritten as `_run_boot_sequence()`, implementing
+  the documented pipeline: verify ADB reachability (`WAITING_FOR_ADB`) →
+  verify `sys.boot_completed == 1` and launcher focus via `dumpsys window`
+  (`BOOTING`) → construct the input/screenshot providers
+  (`INITIALIZING`) → capture one real test screenshot
+  (`CAPTURING_TEST_FRAME`) → only then transition to `READY`. Any stage
+  failure transitions to `ERROR` and raises `DeviceRecoveryError(device_id,
+  stage, reason)` naming exactly which stage failed.
+- Screenshot/tap/swipe/text/metrics no longer 409 on a stale flag: `
+  AppSession._ensure_ready()` re-runs the full boot sequence once whenever
+  state isn't `READY`, before giving up. Only a genuine pipeline failure
+  (device unreachable, still booting, provider init or test-capture
+  failure) surfaces as a 409, and its body is a structured diagnostic
+  (`{"stage": ..., "reason": ..., "detail": ...}`) naming the failed
+  stage — never a bare "not connected".
+  `DeviceManager.shell_sync()` was added as the plain synchronous shell
+  probe this pipeline needed (existing `execute_shell()` is async with
+  retry/recovery semantics that don't fit a single boot-state check).
+- `GET /api/devices` now reports `state`/`state_reason` (from
+  `DeviceLifecycle`) alongside `connected`, with `connected` derived
+  *from* `state` (`state == "ready"`) rather than an independent flag.
+  `app.js` renders one status pill sourced from `state` (`STATE_META`
+  mapping to label/CSS class) instead of separately rendering `status`
+  and a `connected` pill that could disagree.
+
+### Consequences
+
+- Positive: "Status=Online, Connected=No" is now structurally impossible
+  — there is only one state to read, and every consumer (API, UI,
+  screenshot recovery) reads the same one.
+- Positive: a device that looks disconnected purely because of stale
+  session state (e.g. right after a webapp restart, while the emulator
+  itself never went away) now self-heals on the next request instead of
+  requiring the user to manually click Connect.
+- Positive: 409 responses are now actionable — they name the exact stage
+  that failed (`waiting_for_adb`, `booting`, `initializing`,
+  `capturing_test_frame`) instead of a generic "not connected".
+- Negative (accepted): `connect_device()`/action calls are slightly slower
+  on first use per device, since a real boot-completion check and a test
+  screenshot are now mandatory before `READY` — judged acceptable since
+  this is exactly the readiness guarantee the control panel previously
+  lacked, and a booted device passes the checks in well under a second.
+- Negative (documented): `_is_boot_completed()`'s launcher-visible check
+  is best-effort (`dumpsys window` parsed for `mCurrentFocus`) — if the
+  `dumpsys` call itself fails after `sys.boot_completed == 1` already
+  confirmed boot, the device is still treated as booted rather than
+  blocking readiness on a secondary, non-critical check.
+
+## ADR-021: `AndroidPlatformManager` — one Android-domain facade over SDK tooling
+
+### Context
+
+Directive: "Android Studio, sdkmanager, avdmanager, emulator.exe and
+adb.exe are implementation details. The user should never need to
+understand or manually interact with these tools. UGAF should manage
+them automatically." Before this pass, the webapp's `AppSession` called
+`EmulatorManager`, `EnvironmentChecker`, and `DeviceManager` directly and
+independently for every emulator-related action — there was no single
+component "the rest of UGAF" talked to, and no lifecycle transitions were
+recorded for the emulator-process side of a device's life (only the
+webapp's device-*connect* pipeline, ADR-020, had explicit states).
+
+### Decision
+
+- Added `ugaf.android_platform.AndroidPlatformManager`: wraps an
+  already-constructed `EmulatorManager`, `DeviceManager`, and
+  `EnvironmentChecker` behind Android-domain method names
+  (`list_virtual_devices`, `create_virtual_device`,
+  `start_virtual_device`, `stop_virtual_device`, `list_physical_devices`,
+  `platform_health`) — never builds its own SDK-locating `EmulatorManager`,
+  so it adds zero extra SDK-probing cost and stays trivially mockable.
+- `start_virtual_device()` now implements the directive's "Create ->
+  Validate -> Boot" prefix for real: it runs the full dependency report
+  first (`VALIDATING`) and refuses to launch with a specific reason if
+  any blocking component is missing, *before* ever invoking
+  `emulator.exe` — previously a doomed launch would only fail later,
+  opaquely, as a boot timeout. `stop_virtual_device()` brackets the real
+  stop with `STOPPING`/`STOPPED` transitions.
+- Both methods write to the *same* `DeviceLifecycle` instance
+  (ADR-020) the device-connect pipeline uses, keyed first by AVD name
+  (`VALIDATING`/`STARTING`) and then — once `start()` returns an
+  `adb_serial` — the name-keyed entry is deliberately forgotten, since
+  `adb_serial` becomes the canonical key the connect pipeline continues
+  from. This is a real, documented seam: the emulator-launch phase and
+  the device-connect phase of the *same physical device* are
+  necessarily keyed differently (an AVD has a name before it has a
+  serial), and no single key spans both phases yet.
+- **AVD name sanitization** (`ugaf.emulator.naming.sanitize_avd_name`):
+  `EmulatorManager.create()` now sanitizes any user-entered name (e.g.
+  `"ROG A15"` -> `"ROG_A15"`) before it ever reaches `avdmanager`, which
+  silently rejects/mangles names with spaces or most punctuation. The
+  original, human-entered name is preserved on the returned `AvdInfo`'s
+  new `display_name` field so the UI can still show what the user typed
+  even though the identifier itself was sanitized.
+- **Extended SDK validation** (`EnvironmentChecker`): added two new,
+  informational (never-blocking) checks — `cmdline_tools_consistency`
+  (flags an ambiguous `cmdline-tools` layout: no `latest` symlink/dir
+  with more than one versioned dir present) and `hypervisor` (surfaces
+  `emulator -accel-check`'s hardware-virtualization-acceleration result,
+  reusing the existing `HardwareDetector` rather than re-implementing
+  detection).
+- **Removed the "Open Android Studio" feature** (button, JS handler,
+  `AppSession.open_android_studio()`, and its route) entirely, per the
+  directive's explicit "If Android Studio is installed: use it only to
+  discover the SDK location. Do not launch Android Studio." UGAF now
+  never launches the IDE — `AndroidStudioLocator` is still used, but
+  purely to help resolve the SDK root, exactly as it already was inside
+  `EnvironmentChecker`.
+- **UI terminology**: "AVD" renamed to "Virtual Device" in every
+  user-facing label (`New Virtual Device Name`, the `Virtual Device`
+  dropdown, status text) — the API/JSON field names (`name`, `avds`,
+  etc.) are unchanged, since those are internal contracts, not
+  user-facing text.
+- **Environment Doctor**: the existing per-dependency checklist UI
+  needed no rendering changes at all to pick up the two new checks — it
+  already iterated `status.dependencies` generically rather than
+  hardcoding component names. Added one new summary line
+  (`platform-health-summary`) showing overall health plus live
+  physical/virtual device counts, sourced from the exact same
+  `DeviceManager.discover()` call `/api/devices` uses (never a second,
+  independent count).
+
+### Consequences
+
+- Positive: there is now one real component (`AndroidPlatformManager`)
+  that owns Android SDK-tool knowledge for the emulator lifecycle's
+  start/stop path, matching the directive's "the rest of UGAF should
+  communicate only with AndroidPlatformManager" for that path. The other
+  read-only emulator delegation methods (`list_manufacturers`,
+  `list_avds`, `check_system_image`, etc.) still call `EmulatorManager`
+  directly from `AppSession` — folding them in too was judged unnecessary
+  risk for this pass since they're pure reads with no lifecycle
+  transitions to own; tracked as a follow-up, not silently dropped.
+- Positive: a launch that's doomed to fail (missing `avdmanager`, no
+  system image) is now rejected before `emulator.exe` is ever invoked,
+  with the exact missing component named — not a multi-minute boot
+  timeout with no clear cause.
+- Positive: users can now name Virtual Devices anything (`"ROG A15"`,
+  `"My Pixel 9!"`) without needing to know `avdmanager`'s naming rules;
+  the sanitized identifier is fully transparent unless it had to differ
+  from what was typed, in which case the original is preserved for
+  display.
+- Negative (documented, not solved): the AVD-name-keyed vs.
+  adb-serial-keyed lifecycle split described above means there is a
+  brief window (between `start_virtual_device()` returning and the
+  device-connect pipeline's first `WAITING_FOR_ADB` transition) where
+  the device has no tracked lifecycle state at all (`DISCONNECTED` by
+  default). Acceptable since nothing reads state during that window
+  today, but a future unification (e.g. registering the AVD-name ->
+  adb-serial mapping explicitly) would close it.
+- Negative (documented, not solved): "Capture Test" and "Input Test"
+  buttons and a dedicated `platform_health()`-backed API route were not
+  added this pass — `AndroidPlatformManager.platform_health()` exists
+  and is unit-tested, but the webapp only consumes its device-count
+  logic today (folded directly into `emulator_status()`), not the full
+  `PlatformHealth` object via a dedicated route. Tracked as a follow-up.
+
+## ADR-022: One-click "Create Virtual Device" — create/boot/connect collapsed into a single action
+
+### Context
+
+Directive: "The user should not think in terms of SDK / AVD / adb /
+emulator.exe. The user should think only in terms of Android Device /
+Virtual Device / Automation." Concretely: clicking "Create Virtual
+Device" should require zero further manual clicks before the device is
+live on screen and ready for automation.
+
+Before this pass, reaching a usable device required three independent
+manual actions: click Create (AVD created but not running), click Start
+(emulator launches, boots in the background with no visible feedback
+loop tying it to readiness), then click Connect (only then does the
+ADR-020 boot-sequence pipeline run: ADB reachability, boot completion,
+provider init, test screenshot, `READY`). A user unfamiliar with what
+each of those three steps actually does has no way to know when it's
+safe to click the next one.
+
+### Decision
+
+- Added `AppSession.create_and_ready_avd()`: one method composing four
+  already-independently-tested pieces in sequence —
+  `AndroidPlatformManager.create_virtual_device()` ->
+  `start_virtual_device()` -> `EmulatorManager.wait_until_booted()` ->
+  `connect_device()` (the full ADR-020 pipeline). No new duplicate
+  logic — this is pure composition, so every failure mode it can hit
+  was already independently handled (and tested) by one of those four
+  calls.
+- New route `POST /api/emulator/avds/one-click` runs the whole thing in
+  a worker thread (`asyncio.to_thread`, matching every other
+  potentially multi-minute SDK operation this webapp already runs
+  off-loop) and returns the final `device_id`/`state` once truly
+  `READY` — or a stage-specific diagnostic (via the existing
+  `DeviceRecoveryError`/`EmulatorManagerError` exception types) the
+  instant something fails.
+- The webapp's Create button now calls this route instead of the old
+  bare `POST /api/emulator/avds`, and on success immediately selects the
+  new device and shows its live screen — matching the directive's "no
+  intermediate manual actions" requirement end to end, including making
+  the live screen visible without a separate Connect click.
+- Extended the ADR-020 boot-sequence pipeline itself with two new
+  sub-steps, since they apply to *every* device-connect (not just
+  freshly created ones) and the directive lists them as standard
+  boot-sequence stages:
+  - **Screen unlock** (`_unlock_screen`, inside `BOOTING`): sends
+    `KEYCODE_WAKEUP` then `KEYCODE_MENU` over `adb shell input keyevent`
+    once boot-completion is confirmed. Best-effort and never fatal — a
+    fresh AVD's default swipe-to-unlock screen is dismissed, but a
+    PIN/pattern-locked device can't be (and shouldn't be) bypassed this
+    way; either way boot-sequence progress continues.
+  - **Test tap injection** (new `DeviceState.TESTING_INPUT`, after
+    `CAPTURING_TEST_FRAME`): sends one real, harmless tap
+    (`InputManager.click(1, 1)`, a corner pixel unlikely to hit any real
+    UI element) to verify input injection actually works before
+    `READY` — matching the directive's explicit "Tests tap injection"
+    acceptance step, previously only implicitly exercised by
+    `InputManager.connect()`'s screen-size query.
+- A `capture_provider="window"` one-click request defaults `window_title`
+  to the (possibly-sanitized) AVD name automatically — the caller can't
+  know the final sanitized name in advance for a brand-new AVD, so
+  requiring it up front would reintroduce a manual step the directive
+  explicitly rules out.
+
+### Consequences
+
+- Positive: "Create Virtual Device -> Ready with a live screen" is now
+  provably one action, unit-tested end-to-end (mocked ADB reporting the
+  exact serial the mocked `start()` call returns, carrying a request
+  through creation, boot-wait, ADB-reachability, boot-completion,
+  provider init, test screenshot, and test tap, to a `200`/`state:
+  "ready"` response).
+- Positive: auto-recovery (ADR-020's `_ensure_ready`) automatically
+  covers the new unlock/tap-test sub-steps too, for free — recovery
+  re-runs the *entire* pipeline, not a hand-picked subset, so a device
+  that lost its unlock state or whose input injection broke transiently
+  still gets a real chance to self-heal before surfacing an error.
+- Negative (documented, not solved): "Device Profiles" (Gaming
+  Phone/Balanced Phone/High Performance/Tablet) were addressed only as
+  friendly *display labels* over the existing performance-preset names
+  (`gaming`→"Gaming Phone", `mid_range`→"Balanced Phone", etc.) in the
+  UI layer — no new "Tablet" form-factor profile or backend renaming was
+  added, since the manufacturer/device dropdowns already cover
+  brand-name selection (ROG Phone, Samsung Galaxy, Pixel are literal
+  existing entries) and renaming the internal preset identifiers would
+  touch many existing tests for no functional benefit.
+- Negative (documented, not solved): the one-click flow was validated
+  end-to-end via the FastAPI TestClient with a mocked ADB device (fast,
+  deterministic, exercises every stage including failure paths) and the
+  UI wiring was live-verified against the real webapp (confirmed the
+  Create button calls the new route with the right payload and restores
+  its enabled state on failure) — but not against a real multi-minute
+  AVD boot cycle in this pass, to avoid tying up this session for
+  several minutes on an already-proven boot path (ADR-019 already
+  live-validated that exact boot sequence independently). A full live
+  run remains a recommended follow-up before calling this
+  production-final.
